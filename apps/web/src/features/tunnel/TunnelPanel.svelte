@@ -1,4 +1,5 @@
 <script lang="ts">
+import { sleep } from '@ungate/shared/frontend';
 import IconCopy from 'virtual:icons/lucide/copy';
 import IconPlay from 'virtual:icons/lucide/play';
 import IconRotateCcw from 'virtual:icons/lucide/rotate-ccw';
@@ -29,11 +30,10 @@ let copied = $state(false);
 function handleCopy() {
 	if (!store.tunnel.url) return;
 
-	void navigator.clipboard.writeText(`${store.tunnel.url}/v1`).then(() => {
+	void navigator.clipboard.writeText(`${store.tunnel.url}/v1`).then(async () => {
 		copied = true;
-		setTimeout(() => {
-			copied = false;
-		}, 2000);
+		await sleep(2000);
+		copied = false;
 	});
 }
 

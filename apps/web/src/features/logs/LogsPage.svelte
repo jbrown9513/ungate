@@ -1,4 +1,6 @@
 <script lang="ts">
+import { sleep } from '@ungate/shared/frontend';
+
 import { Formatter } from '$shared/formatter';
 
 import { getLogsStore } from './logs-store.svelte';
@@ -17,17 +19,19 @@ let tunnelCopied = $state(false);
 function showCopiedFor(source: 'api' | 'tunnel'): void {
 	if (source === 'api') {
 		apiCopied = true;
-		setTimeout(() => {
+		void (async () => {
+			await sleep(1200);
 			apiCopied = false;
-		}, 1200);
+		})();
 
 		return;
 	}
 
 	tunnelCopied = true;
-	setTimeout(() => {
+	void (async () => {
+		await sleep(1200);
 		tunnelCopied = false;
-	}, 1200);
+	})();
 }
 
 async function handleCopyApi(): Promise<void> {

@@ -3,24 +3,30 @@ import * as path from 'node:path';
 
 import * as vscode from 'vscode';
 
-import { LogRingBuffer, type LogEntry } from './utils/log-ring-buffer';
+import { SharedLogStore } from './runtime-state/shared-log-store';
+import { LogRingBuffer } from './utils/log-ring-buffer';
 
-import type { TunnelState } from './tunnel-manager';
+import type { LogEntry, TunnelState, WebviewToExtension } from '@ungate/shared/frontend';
 
 const LOG_BUFFER_SIZE = 500;
+const LOG_POLL_INTERVAL_MS = 500;
 
 const MSGS_SIMPLE = ['webview-ready', 'restart-server', 'start-tunnel', 'stop-tunnel', 'restart-tunnel'] as const;
 
 export type Msg =
 	| { type: 'open-external-url'; url: string }
 	| { type: 'set-key-fix-enabled'; enabled: boolean }
-	| { type: (typeof MSGS_SIMPLE)[number] };
+	| { type: 'clear-logs'; source: 'api' | 'tunnel' }
+	| Extract<WebviewToExtension, { type: (typeof MSGS_SIMPLE)[number] }>;
 
 export class Dashboard {
 	private panel: vscode.WebviewPanel | null = null;
 	private readonly apiLogBuffer = new LogRingBuffer(LOG_BUFFER_SIZE);
 	private readonly tunnelLogBuffer = new LogRingBuffer(LOG_BUFFER_SIZE);
 	private currentPort: number | null = null;
+	private apiLogFileOffset = 0;
+	private tunnelLogFileOffset = 0;
+	private logPollTimer: NodeJS.Timeout | null = null;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -61,11 +67,18 @@ export class Dashboard {
 		});
 
 		this.panel.onDidDispose(() => {
+			this.stopLogPoll();
 			this.panel = null;
 		});
+
+		this.startLogPoll();
 	}
 
 	setPort(port: number | null): void {
+		if (this.currentPort === port) {
+			return;
+		}
+
 		this.currentPort = port;
 		this.sendPort();
 		this.rebuildHtml();
@@ -74,8 +87,17 @@ export class Dashboard {
 	pushLog(source: 'api' | 'tunnel', entry: LogEntry): void {
 		const buffer = source === 'api' ? this.apiLogBuffer : this.tunnelLogBuffer;
 		buffer.push(entry);
+		SharedLogStore.append(source, entry);
 
 		this.panel?.webview.postMessage({ type: 'log', source, entry });
+	}
+
+	clearLogs(source: 'api' | 'tunnel'): void {
+		const buffer = source === 'api' ? this.apiLogBuffer : this.tunnelLogBuffer;
+		buffer.clear();
+		SharedLogStore.clear(source);
+		this.syncLogFileOffsets();
+		this.panel?.webview.postMessage({ type: 'logs-cleared', source });
 	}
 
 	sendInitialState(tunnelState: TunnelState): void {
@@ -129,6 +151,16 @@ export class Dashboard {
 			return { type: 'set-key-fix-enabled', enabled };
 		}
 
+		if (type === 'clear-logs') {
+			const source = record.source;
+
+			if (source !== 'api' && source !== 'tunnel') {
+				return null;
+			}
+
+			return { type: 'clear-logs', source };
+		}
+
 		for (const allowed of MSGS_SIMPLE) {
 			if (allowed === type) {
 				return { type: allowed };
@@ -159,12 +191,50 @@ export class Dashboard {
 	}
 
 	private sendBufferedLogs(source: 'api' | 'tunnel'): void {
-		const buffer = source === 'api' ? this.apiLogBuffer : this.tunnelLogBuffer;
-		const entries = buffer.getAll();
+		const entries = SharedLogStore.readAll(source);
 
 		if (entries.length > 0) {
 			this.panel?.webview.postMessage({ type: 'log-bulk', source, entries });
 		}
+
+		this.syncLogFileOffsets();
+	}
+
+	private startLogPoll(): void {
+		this.stopLogPoll();
+		this.logPollTimer = setInterval(() => {
+			this.pollSharedLogs('api');
+			this.pollSharedLogs('tunnel');
+		}, LOG_POLL_INTERVAL_MS);
+	}
+
+	private stopLogPoll(): void {
+		if (this.logPollTimer) {
+			clearInterval(this.logPollTimer);
+			this.logPollTimer = null;
+		}
+	}
+
+	private pollSharedLogs(source: 'api' | 'tunnel'): void {
+		const offset = source === 'api' ? this.apiLogFileOffset : this.tunnelLogFileOffset;
+		const { entries, nextOffset } = SharedLogStore.readSince(source, offset);
+
+		if (source === 'api') {
+			this.apiLogFileOffset = nextOffset;
+		} else {
+			this.tunnelLogFileOffset = nextOffset;
+		}
+
+		for (const entry of entries) {
+			this.panel?.webview.postMessage({ type: 'log', source, entry });
+		}
+	}
+
+	private syncLogFileOffsets(): void {
+		const fileSize = SharedLogStore.getFileSize();
+
+		this.apiLogFileOffset = fileSize;
+		this.tunnelLogFileOffset = fileSize;
 	}
 
 	private buildHtml(): string {

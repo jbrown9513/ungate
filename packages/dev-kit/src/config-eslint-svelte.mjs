@@ -118,7 +118,7 @@ export const createSvelteEslintConfig = ({
 		parserOptions: {
 			projectService: true,
 			tsconfigRootDir: projectRoot,
-			extraFileExtensions: ['.svelte']
+			extraFileExtensions: ['.svelte', '.svelte.ts']
 		}
 	};
 
@@ -130,7 +130,7 @@ export const createSvelteEslintConfig = ({
 			parser: tsParser,
 			projectService: true,
 			tsconfigRootDir: projectRoot,
-			extraFileExtensions: ['.svelte'],
+			extraFileExtensions: ['.svelte', '.svelte.ts'],
 			svelteConfig
 		}
 	};

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { getProviderLabel } from '@ungate/shared/frontend';
+import { getProviderLabel, sleep } from '@ungate/shared/frontend';
 import IconCopy from 'virtual:icons/lucide/copy';
 import IconTrash2 from 'virtual:icons/lucide/trash-2';
 
@@ -149,11 +149,13 @@ async function copyModelId(id: string) {
 
 	await navigator.clipboard.writeText(id);
 	copiedId = id;
-	setTimeout(() => {
+	void (async () => {
+		await sleep(1500);
+
 		if (copiedId === id) {
 			copiedId = null;
 		}
-	}, 1500);
+	})();
 }
 
 function requestDelete(id: string, index: number) {

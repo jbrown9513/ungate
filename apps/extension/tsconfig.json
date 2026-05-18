@@ -2,11 +2,22 @@
 	"extends": "@ungate/dev-kit/tsconfig-base",
 	"compilerOptions": {
 		"module": "commonjs",
-		"lib": ["ES2022"],
+		"lib": [
+			"ES2022"
+		],
 		"moduleResolution": "node",
 		"importHelpers": false,
 		"noEmit": true
 	},
-	"include": ["src", "eslint.config.mjs", "tsup.config.ts"],
-	"exclude": ["node_modules", "dist"]
+	"include": [
+		"src",
+		"tests",
+		"eslint.config.mjs",
+		"tsup.config.ts",
+		"vitest.config.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"dist"
+	]
 }

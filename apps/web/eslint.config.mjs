@@ -16,6 +16,9 @@ export default createSvelteEslintConfig({
 		'import-x/no-unresolved': ['error', { ignore: ['^virtual:icons/'] }]
 	},
 	additionalSvelteRules: {
-		'import-x/no-unresolved': ['error', { ignore: ['^virtual:icons/'] }]
+		'import-x/no-unresolved': ['error', { ignore: ['^virtual:icons/'] }],
+		'@typescript-eslint/no-unsafe-call': 'off',
+		'@typescript-eslint/no-unsafe-member-access': 'off',
+		'@typescript-eslint/prefer-nullish-coalescing': 'off'
 	}
 });

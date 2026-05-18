@@ -1,7 +1,15 @@
-import type { AnalyticsSummary, AppSettings, Period, RequestRecord, TokenSeriesPoint } from '@ungate/shared/frontend';
+import {
+	sleep,
+	type AnalyticsSummary,
+	type AppSettings,
+	type Period,
+	type RequestRecord,
+	type TokenSeriesPoint
+} from '@ungate/shared/frontend';
 
 export class Api {
 	private static port: number | null = (window as unknown as { __PORT__?: number | null }).__PORT__ ?? null;
+	private static readonly portWaiters = new Set<(port: number) => void>();
 
 	static {
 		window.addEventListener('message', (event: MessageEvent) => {
@@ -9,11 +17,19 @@ export class Api {
 
 			if (message.type === 'port') {
 				this.port = message.port ?? null;
+
+				if (message.port) {
+					for (const resolve of this.portWaiters) {
+						resolve(message.port);
+					}
+
+					this.portWaiters.clear();
+				}
 			}
 		});
 	}
 
-	private static getPort(): number {
+	private static async getPort(): Promise<number> {
 		const injected = (window as unknown as { __PORT__?: number | null }).__PORT__;
 
 		if (injected) {
@@ -24,15 +40,34 @@ export class Api {
 			return this.port;
 		}
 
-		throw new Error('Ungate API is still starting');
+		const port = await new Promise<number>((resolve, reject) => {
+			const resolveWithCleanup = (nextPort: number) => {
+				this.portWaiters.delete(resolveWithCleanup);
+				resolve(nextPort);
+			};
+
+			this.portWaiters.add(resolveWithCleanup);
+
+			void sleep(5000)
+				.then(() => {
+					this.portWaiters.delete(resolveWithCleanup);
+					reject(new Error('Ungate API is still starting'));
+				})
+				.catch(() => {});
+		});
+
+		return port;
 	}
 
-	private static baseUrl(): string {
-		return `http://localhost:${this.getPort()}`;
+	private static async baseUrl(): Promise<string> {
+		const port = await this.getPort();
+
+		return `http://localhost:${port}`;
 	}
 
 	private static async get<T>(path: string): Promise<T> {
-		const response = await fetch(`${this.baseUrl()}${path}`);
+		const baseUrl = await this.baseUrl();
+		const response = await fetch(`${baseUrl}${path}`);
 
 		if (!response.ok) {
 			throw new Error(`GET ${path} failed: ${response.status}`);
@@ -42,7 +77,8 @@ export class Api {
 	}
 
 	private static async post<T>(path: string, body?: unknown): Promise<T> {
-		const response = await fetch(`${this.baseUrl()}${path}`, {
+		const baseUrl = await this.baseUrl();
+		const response = await fetch(`${baseUrl}${path}`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body ?? {})
@@ -125,7 +161,8 @@ export class Api {
 
 	static async healthCheck(): Promise<boolean> {
 		try {
-			const response = await fetch(`${this.baseUrl()}/health`, { signal: AbortSignal.timeout(1000) });
+			const baseUrl = await this.baseUrl();
+			const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1000) });
 
 			return response.ok;
 		} catch {

@@ -3,7 +3,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 
+import { DEFAULT_KEY_FIX_ENABLED, sleep } from '@ungate/shared/frontend';
 import * as vscode from 'vscode';
+
+import { RuntimeStateStore } from './runtime-state';
+import { config as runtimeStateConfig } from './runtime-state/config';
 
 const execFileAsync = promisify(execFile);
 
@@ -11,17 +15,16 @@ const config = {
 	logPrefix: '[openai-key-fix]',
 	key: {
 		storage: 'src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser',
-		toggleCommand: 'aiSettings.usingOpenAIKey.toggle',
-		settingsKey: 'keyFixEnabled'
+		toggleCommand: 'aiSettings.usingOpenAIKey.toggle'
 	},
 	files: {
 		stateDb: 'state.vscdb',
 		stateDbGlob: 'state.vscdb*'
 	},
 	timers: {
-		initialCheckMs: 3000,
-		debounceMs: 1000,
-		pollMs: 5000
+		initialCheckMs: runtimeStateConfig.openAiKeyFix.initialCheckMs,
+		debounceMs: runtimeStateConfig.openAiKeyFix.debounceMs,
+		pollMs: runtimeStateConfig.openAiKeyFix.pollMs
 	},
 	sql: {
 		readOpenAiKey(storageKey: string): string {
@@ -46,8 +49,8 @@ interface ServiceState {
 
 interface RuntimeState {
 	pollInterval: NodeJS.Timeout | null;
-	debounceTimer: NodeJS.Timeout | null;
-	initialTimeout: NodeJS.Timeout | null;
+	debounceAbort: AbortController | null;
+	initialAbort: AbortController | null;
 	watcher: vscode.FileSystemWatcher | null;
 	watcherSubscriptions: vscode.Disposable[];
 }
@@ -56,15 +59,15 @@ export class OpenAiKeyFix {
 	private readonly stateDbPath: string;
 	private sqlite3Path: string | null = null;
 	private state: ServiceState = {
-		enabled: true,
+		enabled: DEFAULT_KEY_FIX_ENABLED,
 		running: false,
 		activated: false
 	};
 
 	private runtime: RuntimeState = {
 		pollInterval: null,
-		debounceTimer: null,
-		initialTimeout: null,
+		debounceAbort: null,
+		initialAbort: null,
 		watcher: null,
 		watcherSubscriptions: []
 	};
@@ -86,26 +89,33 @@ export class OpenAiKeyFix {
 
 	public async activate(): Promise<void> {
 		this.state.activated = true;
-		const restoredState = this.context.globalState.get<boolean>(config.key.settingsKey, true);
 		this.sqlite3Path = await this.findSqlite3();
+		const restoredState = RuntimeStateStore.read().keyFix.enabled;
 
-		if (!restoredState) {
-			await this.syncState(false);
+		await this.applySharedState(restoredState);
+	}
 
-			return;
-		}
-
-		const unavailableReason = this.getUnavailableReason();
-
-		if (unavailableReason) {
-			await this.syncState(false);
-			this.log(`${config.logPrefix} ${unavailableReason}`);
+	public async applySharedState(enabled: boolean): Promise<void> {
+		if (!this.state.activated) {
+			this.state.enabled = enabled;
+			this.onStateChange(enabled);
 
 			return;
 		}
 
-		await this.syncState(true);
-		this.startMonitoring();
+		if (this.state.enabled === enabled) {
+			this.onStateChange(enabled);
+
+			return;
+		}
+
+		if (enabled) {
+			await this.enableFromShared();
+
+			return;
+		}
+
+		this.disableFromShared();
 	}
 
 	public async setEnabledByUser(nextEnabled: boolean): Promise<void> {
@@ -142,21 +152,25 @@ export class OpenAiKeyFix {
 
 		this.stopMonitoring();
 		const globalStorageDir = path.dirname(this.stateDbPath);
-		this.runtime.initialTimeout = setTimeout(() => {
-			void this.checkAndFix();
-		}, config.timers.initialCheckMs);
+		this.runtime.initialAbort = new AbortController();
+		const initialSignal = this.runtime.initialAbort.signal;
+		void sleep(config.timers.initialCheckMs, initialSignal)
+			.then(() => this.checkAndFix())
+			.catch(() => {});
 
 		this.runtime.watcher = vscode.workspace.createFileSystemWatcher(
 			new vscode.RelativePattern(vscode.Uri.file(globalStorageDir), config.files.stateDbGlob)
 		);
 		const handleFsEvent = (): void => {
-			if (this.runtime.debounceTimer) {
-				clearTimeout(this.runtime.debounceTimer);
+			if (this.runtime.debounceAbort) {
+				this.runtime.debounceAbort.abort();
 			}
 
-			this.runtime.debounceTimer = setTimeout(() => {
-				void this.checkAndFix();
-			}, config.timers.debounceMs);
+			this.runtime.debounceAbort = new AbortController();
+			const debounceSignal = this.runtime.debounceAbort.signal;
+			void sleep(config.timers.debounceMs, debounceSignal)
+				.then(() => this.checkAndFix())
+				.catch(() => {});
 		};
 
 		this.runtime.watcherSubscriptions = [
@@ -170,9 +184,9 @@ export class OpenAiKeyFix {
 	}
 
 	private stopMonitoring(): void {
-		if (this.runtime.initialTimeout) {
-			clearTimeout(this.runtime.initialTimeout);
-			this.runtime.initialTimeout = null;
+		if (this.runtime.initialAbort) {
+			this.runtime.initialAbort.abort();
+			this.runtime.initialAbort = null;
 		}
 
 		if (this.runtime.pollInterval) {
@@ -180,9 +194,9 @@ export class OpenAiKeyFix {
 			this.runtime.pollInterval = null;
 		}
 
-		if (this.runtime.debounceTimer) {
-			clearTimeout(this.runtime.debounceTimer);
-			this.runtime.debounceTimer = null;
+		if (this.runtime.debounceAbort) {
+			this.runtime.debounceAbort.abort();
+			this.runtime.debounceAbort = null;
 		}
 
 		for (const watcherSubscription of this.runtime.watcherSubscriptions) {
@@ -262,8 +276,35 @@ export class OpenAiKeyFix {
 
 	private async syncState(enabled: boolean): Promise<void> {
 		this.state.enabled = enabled;
-		await this.context.globalState.update(config.key.settingsKey, enabled);
+		await RuntimeStateStore.mutate((current) => {
+			current.keyFix.enabled = enabled;
+
+			return current;
+		});
 		this.onStateChange(enabled);
+	}
+
+	private async enableFromShared(): Promise<void> {
+		const unavailableReason = this.getUnavailableReason();
+
+		if (unavailableReason) {
+			this.state.enabled = true;
+			this.onStateChange(true);
+			this.log(`${config.logPrefix} ${unavailableReason}`);
+
+			return;
+		}
+
+		this.state.enabled = true;
+		this.onStateChange(true);
+		this.startMonitoring();
+		await this.checkAndFix();
+	}
+
+	private disableFromShared(): void {
+		this.state.enabled = false;
+		this.stopMonitoring();
+		this.onStateChange(false);
 	}
 
 	private async enableByUser(): Promise<void> {

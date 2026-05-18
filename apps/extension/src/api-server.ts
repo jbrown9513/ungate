@@ -4,23 +4,24 @@ import * as https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { sleep, type ApiStatus as ServerStatus, type LogEntry } from '@ungate/shared';
 import * as vscode from 'vscode';
 
+import { RuntimeStateStore } from './runtime-state';
+import { config } from './runtime-state/config';
 import { NodeResolver } from './utils/node-resolver';
 
-import type { LogEntry } from './utils/log-ring-buffer';
 import type { Writable } from 'node:stream';
 
-const HEALTH_CHECK_INTERVAL_MS = 1000;
 const HEALTH_CHECK_URL = (port: number) => `http://localhost:${port}/health`;
 const BETTER_SQLITE3_VERSION = '12.9.0';
-
-type ServerStatus = 'running' | 'stopped' | 'error';
 
 interface ApiServerCallbacks {
 	onLog(level: LogEntry['level'], message: string): void;
 	onPortDetected(port: number): void;
 	onStatusChange(status: ServerStatus): void;
+	isLeaderWindow(): boolean;
+	isExtensionHostActive(): boolean;
 }
 
 export class ApiServer {
@@ -28,9 +29,12 @@ export class ApiServer {
 	private healthCheckTimer: NodeJS.Timeout | null = null;
 	private stdoutBuffer = '';
 	private restartRequested = false;
+	private shutDownDeliberately = false;
 	private lastStatus: ServerStatus | null = null;
 	private port: number | null = null;
 	private runtimePath = '';
+	private noClientsSince: number | null = null;
+	private addressInUsePort: number | null = null;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -38,16 +42,37 @@ export class ApiServer {
 	) {}
 
 	async start(): Promise<void> {
+		if (this.process) {
+			return;
+		}
+
+		const runtimeState = RuntimeStateStore.read();
+		const existingPort = runtimeState.api.port;
+
+		if (existingPort) {
+			const isAlive = await this.checkPortHealth(existingPort);
+
+			if (isAlive) {
+				this.port = existingPort;
+				this.callbacks.onPortDetected(existingPort);
+				await this.setStatus('running');
+				this.startHealthCheck();
+
+				return;
+			}
+		}
+
 		await this.ensureNativeDeps();
 		this.spawn();
 	}
 
-	restart(): void {
+	async restart(): Promise<void> {
 		this.restartRequested = true;
-		this.setStatus('stopped');
+		await this.setStatus('stopped');
 
 		if (!this.process) {
-			setTimeout(() => this.spawn(), 0);
+			await sleep(0);
+			this.spawn();
 
 			return;
 		}
@@ -55,14 +80,34 @@ export class ApiServer {
 		this.process.kill();
 	}
 
-	stop(): void {
+	async stop(): Promise<void> {
 		this.stopHealthCheck();
+		if (this.process) {
+			this.shutDownDeliberately = true;
+		}
 		this.process?.kill();
 		this.process = null;
+		this.noClientsSince = null;
+		this.lastStatus = 'stopped';
+		await this.writeRuntimeState('stopped', null);
 	}
 
 	getPort(): number | null {
 		return this.port;
+	}
+
+	syncLeaderHealthMonitor(isLeader: boolean): void {
+		if (!isLeader) {
+			this.stopHealthCheck();
+
+			return;
+		}
+
+		const hasRuntimeTarget = this.process !== null || this.port !== null;
+
+		if (hasRuntimeTarget && !this.healthCheckTimer) {
+			this.startHealthCheck();
+		}
 	}
 
 	private spawn(): void {
@@ -82,12 +127,16 @@ export class ApiServer {
 
 		this.callbacks.onLog('info', `[process] starting api via ${runtime}`);
 
-		this.process = cp.spawn(runtime, nodeArgs, { cwd, env, stdio: 'pipe', detached: false });
+		this.process = cp.spawn(runtime, nodeArgs, { cwd, env, stdio: 'pipe', detached: true });
+		this.process.unref();
+		void this.writeRuntimeState('stopped', null).catch(() => {});
 
 		this.process.stdout?.on('data', (data: Buffer) => this.onStdout(data));
 		this.process.stderr?.on('data', (data: Buffer) => this.onStderr(data));
 		this.process.on('exit', (code, signal) => this.onExit(code, signal));
-		this.process.on('error', (err) => this.onError(err));
+		this.process.on('error', (err) => {
+			void this.onSpawnProcessError(err).catch(() => {});
+		});
 
 		this.startHealthCheck();
 	}
@@ -116,58 +165,152 @@ export class ApiServer {
 		const text = data.toString();
 
 		for (const line of text.split('\n').filter((l) => l.trim())) {
+			if (line.includes('EADDRINUSE')) {
+				const match = /port:\s*(\d+)/.exec(this.stdoutBuffer + text);
+
+				if (match) {
+					this.addressInUsePort = parseInt(match[1], 10);
+				}
+			}
+
 			this.callbacks.onLog('error', line);
 		}
 	}
 
 	private onExit(code: number | null, signal: NodeJS.Signals | null): void {
 		this.process = null;
+		this.noClientsSince = null;
 
-		const level: LogEntry['level'] = this.restartRequested || code === 0 ? 'info' : 'error';
-		this.callbacks.onLog(level, `[process] exit code=${code} signal=${signal}`);
+		let level: LogEntry['level'];
 
 		if (this.restartRequested || code === 0) {
+			level = 'info';
+		} else {
+			level = 'error';
+		}
+
+		this.callbacks.onLog(level, `[process] exit code=${code} signal=${signal}`);
+
+		if (this.restartRequested) {
 			this.restartRequested = false;
+			this.shutDownDeliberately = false;
 			this.lastStatus = 'stopped';
-			setTimeout(() => this.spawn(), 500);
+			void sleep(config.apiServer.restartDelayMs).then(() => {
+				this.spawn();
+			});
 
 			return;
 		}
 
-		this.setStatus('error');
+		if (this.shutDownDeliberately) {
+			this.shutDownDeliberately = false;
+
+			return;
+		}
+
+		if (code === 0) {
+			this.lastStatus = 'stopped';
+			void sleep(config.apiServer.restartDelayMs).then(() => {
+				this.spawn();
+			});
+
+			return;
+		}
+
+		if (this.addressInUsePort) {
+			const addressInUsePort = this.addressInUsePort;
+			this.addressInUsePort = null;
+			void this.tryAttachToRunningPort(addressInUsePort).catch(() => {
+				void this.setStatus('error').catch(() => {});
+			});
+
+			return;
+		}
+
+		void this.setStatus('error').catch(() => {});
 	}
 
-	private onError(err: Error): void {
+	private async tryAttachToRunningPort(port: number): Promise<void> {
+		const isAlive = await this.checkPortHealth(port);
+
+		if (!isAlive) {
+			await this.setStatus('error');
+
+			return;
+		}
+
+		this.port = port;
+		this.callbacks.onPortDetected(port);
+		await this.setStatus('running');
+		this.startHealthCheck();
+	}
+
+	private async onSpawnProcessError(err: Error): Promise<void> {
 		this.callbacks.onLog('error', `[process] error: ${err.message}`);
-		this.setStatus('error');
+		await this.writeRuntimeState('error', err.message);
+		this.lastStatus = 'error';
+		this.callbacks.onStatusChange('error');
 	}
 
 	private startHealthCheck(): void {
 		this.stopHealthCheck();
 
 		this.healthCheckTimer = setInterval(() => {
-			if (!this.port) {
+			void this.runHealthCheckCycle().catch(() => {});
+		}, config.apiServer.healthCheckIntervalMs);
+	}
+
+	private async runHealthCheckCycle(): Promise<void> {
+		if (!this.callbacks.isLeaderWindow()) {
+			return;
+		}
+
+		const runtimeState = RuntimeStateStore.read();
+		const hasLiveClientsOnDisk = RuntimeStateStore.hasLiveClients(runtimeState);
+		const extensionHostAlive = this.callbacks.isExtensionHostActive();
+		const treatAsLiveClients = hasLiveClientsOnDisk || extensionHostAlive;
+		const hasLeaderWindow = this.callbacks.isLeaderWindow();
+
+		if (!treatAsLiveClients && this.lastStatus === 'running') {
+			this.noClientsSince ??= Date.now();
+
+			if (Date.now() - this.noClientsSince >= config.apiServer.noClientsGracePeriodMs) {
+				this.callbacks.onLog('info', '[process] no live windows, stopping api');
+				await this.stop();
+
 				return;
 			}
+		} else {
+			this.noClientsSince = null;
+		}
 
-			void fetch(HEALTH_CHECK_URL(this.port), { signal: AbortSignal.timeout(2000) })
-				.then((res) => {
-					if (res.ok) {
-						const wasDown = this.lastStatus !== 'running';
+		if (treatAsLiveClients && this.lastStatus === 'running' && !hasLeaderWindow) {
+			return;
+		}
 
-						this.setStatus('running');
+		if (!this.port) {
+			return;
+		}
 
-						if (wasDown) {
-							this.callbacks.onPortDetected(this.port!);
-						}
-					} else {
-						this.setStatus('error');
-					}
-				})
-				.catch(() => {
-					this.setStatus('stopped');
-				});
-		}, HEALTH_CHECK_INTERVAL_MS);
+		try {
+			const res = await fetch(HEALTH_CHECK_URL(this.port), {
+				signal: AbortSignal.timeout(config.apiServer.healthCheckRequestTimeoutMs)
+			});
+
+			if (res.ok) {
+				const wasDown = this.lastStatus !== 'running';
+
+				await this.setStatus('running');
+
+				if (wasDown) {
+					this.callbacks.onPortDetected(this.port);
+				}
+			} else {
+				await this.setStatus('error');
+			}
+		} catch {
+			await this.setStatus('error');
+		}
 	}
 
 	private stopHealthCheck(): void {
@@ -177,9 +320,51 @@ export class ApiServer {
 		}
 	}
 
-	private setStatus(status: ServerStatus): void {
+	private async setStatus(status: ServerStatus): Promise<void> {
 		this.lastStatus = status;
+		await this.writeRuntimeState(status, null);
 		this.callbacks.onStatusChange(status);
+	}
+
+	private async writeRuntimeState(status: ServerStatus, errorMessage: string | null): Promise<void> {
+		await RuntimeStateStore.mutate((current) => {
+			const now = Date.now();
+			let pid: number | null = null;
+
+			if (this.process?.pid) {
+				pid = this.process.pid;
+			}
+
+			current.api.pid = pid;
+			current.api.port = this.port;
+			current.api.status = status;
+			current.api.lastSeenAt = now;
+			current.api.lastError = errorMessage;
+
+			return current;
+		});
+	}
+
+	private async checkPortHealth(port: number): Promise<boolean> {
+		try {
+			const response = await fetch(HEALTH_CHECK_URL(port), {
+				signal: AbortSignal.timeout(config.apiServer.portHealthRequestTimeoutMs)
+			});
+
+			return response.ok;
+		} catch {
+			return false;
+		}
+	}
+
+	private isProcessAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private getServerCwd(): string {

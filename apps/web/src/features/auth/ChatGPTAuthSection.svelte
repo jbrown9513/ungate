@@ -1,4 +1,5 @@
 <script lang="ts">
+import { sleep } from '@ungate/shared/frontend';
 import IconCheck from 'virtual:icons/lucide/check';
 import IconLoader from 'virtual:icons/lucide/loader-circle';
 import IconLogOut from 'virtual:icons/lucide/log-out';
@@ -19,7 +20,7 @@ let loading = $state(true);
 let checking = $state(false);
 let error = $state<string | null>(null);
 let pollingTimer = $state<ReturnType<typeof setInterval> | null>(null);
-let timeoutTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+let timeoutAbort: AbortController | null = null;
 let lastAction = $state('');
 let cancelled = $state(false);
 
@@ -29,9 +30,9 @@ function stopPolling() {
 		pollingTimer = null;
 	}
 
-	if (timeoutTimer) {
-		clearTimeout(timeoutTimer);
-		timeoutTimer = null;
+	if (timeoutAbort) {
+		timeoutAbort.abort();
+		timeoutAbort = null;
 	}
 }
 
@@ -84,14 +85,23 @@ async function handleLogin() {
 			})();
 		}, 1000);
 
-		timeoutTimer = setTimeout(() => {
-			stopPolling();
-			if (checking) {
-				checking = false;
-				error = 'Authorization timed out';
-				lastAction = 'Authorization timed out';
-			}
-		}, 300_000);
+		if (timeoutAbort) {
+			timeoutAbort.abort();
+		}
+
+		timeoutAbort = new AbortController();
+		const timeoutSignal = timeoutAbort.signal;
+		void sleep(300_000, timeoutSignal)
+			.then(() => {
+				stopPolling();
+
+				if (checking) {
+					checking = false;
+					error = 'Authorization timed out';
+					lastAction = 'Authorization timed out';
+				}
+			})
+			.catch(() => {});
 	} catch (e) {
 		error = e instanceof Error ? e.message : String(e);
 		checking = false;
