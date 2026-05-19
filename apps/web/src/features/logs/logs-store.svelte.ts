@@ -1,4 +1,8 @@
+import { postExtensionMessage } from '$shared/vscode';
+
 import type { ExtensionToWebview, LogEntry } from '@ungate/shared/frontend';
+
+const MAX_LOG_ENTRIES = 500;
 
 interface LogsStore {
 	readonly apiLogs: LogEntry[];
@@ -17,29 +21,47 @@ function handleMessage(event: MessageEvent): void {
 
 	if (message.type === 'log') {
 		if (message.source === 'api') {
-			apiLogs = [...apiLogs, message.entry];
+			apiLogs = trimLogEntries([...apiLogs, message.entry]);
 		} else {
-			tunnelLogs = [...tunnelLogs, message.entry];
+			tunnelLogs = trimLogEntries([...tunnelLogs, message.entry]);
 		}
 	}
 
 	if (message.type === 'log-bulk') {
 		if (message.source === 'api') {
-			apiLogs = [...apiLogs, ...message.entries];
+			apiLogs = trimLogEntries([...apiLogs, ...message.entries]);
 		} else {
-			tunnelLogs = [...tunnelLogs, ...message.entries];
+			tunnelLogs = trimLogEntries([...tunnelLogs, ...message.entries]);
 		}
 	}
+
+	if (message.type === 'logs-cleared') {
+		if (message.source === 'api') {
+			apiLogs = [];
+		} else {
+			tunnelLogs = [];
+		}
+	}
+}
+
+function trimLogEntries(entries: LogEntry[]): LogEntry[] {
+	if (entries.length <= MAX_LOG_ENTRIES) {
+		return entries;
+	}
+
+	return entries.slice(-MAX_LOG_ENTRIES);
 }
 
 window.addEventListener('message', handleMessage);
 
 function clearApi(): void {
 	apiLogs = [];
+	postExtensionMessage({ type: 'clear-logs', source: 'api' });
 }
 
 function clearTunnel(): void {
 	tunnelLogs = [];
+	postExtensionMessage({ type: 'clear-logs', source: 'tunnel' });
 }
 
 async function copyApi(): Promise<void> {

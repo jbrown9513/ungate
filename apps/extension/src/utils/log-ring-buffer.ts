@@ -1,8 +1,4 @@
-export interface LogEntry {
-	timestamp: number;
-	level: 'info' | 'warn' | 'error';
-	message: string;
-}
+import type { LogEntry } from '@ungate/shared/frontend';
 
 export class LogRingBuffer {
 	private readonly buffer: LogEntry[] = [];

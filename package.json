@@ -11,7 +11,7 @@
 		"tunnel": "pnpm --filter @ungate/scripts run tunnel",
 		"package:build": "bash scripts/build-package/run.sh",
 		"lint:fix": "pnpm -r --parallel run lint:fix",
-		"test": "pnpm -r run test",
+		"test": "pnpm --filter ungate test && pnpm --filter @ungate/api test",
 		"prepare": "husky"
 	},
 	"devDependencies": {

@@ -1,5 +1,7 @@
+import type { LogLevel } from './runtime';
+
 export interface LogEntry {
 	timestamp: number;
-	level: 'info' | 'warn' | 'error';
+	level: LogLevel;
 	message: string;
 }

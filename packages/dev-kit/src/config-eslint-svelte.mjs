@@ -118,7 +118,7 @@ export const createSvelteEslintConfig = ({
 		parserOptions: {
 			projectService: true,
 			tsconfigRootDir: projectRoot,
-			extraFileExtensions: ['.svelte']
+			extraFileExtensions: ['.svelte', '.svelte.ts']
 		}
 	};
 
@@ -130,7 +130,7 @@ export const createSvelteEslintConfig = ({
 			parser: tsParser,
 			projectService: true,
 			tsconfigRootDir: projectRoot,
-			extraFileExtensions: ['.svelte'],
+			extraFileExtensions: ['.svelte', '.svelte.ts'],
 			svelteConfig
 		}
 	};
@@ -155,13 +155,13 @@ export const createSvelteEslintConfig = ({
 		...rules,
 		...htmlRules,
 		...svelteOnlyRules,
-	'simple-import-sort/imports': [
-		'error',
-		{
-			groups: svelteImportSortGroups
-		}
-	],
-	'simple-import-sort/exports': 'error',
+		'simple-import-sort/imports': [
+			'error',
+			{
+				groups: svelteImportSortGroups
+			}
+		],
+		'simple-import-sort/exports': 'error',
 		'prettier/prettier': [
 			'error',
 			{

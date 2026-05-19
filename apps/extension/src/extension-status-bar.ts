@@ -2,9 +2,7 @@ import * as vscode from 'vscode';
 
 import { extensionCommands } from './extension-commands';
 
-import type { TunnelState } from './tunnel-manager';
-
-type ApiBarStatus = 'running' | 'stopped' | 'error';
+import type { ApiStatus as ApiBarStatus, TunnelState } from '@ungate/shared/frontend';
 
 export class ExtensionStatusBar {
 	public static formatApiTip(apiState: ApiBarStatus): string {

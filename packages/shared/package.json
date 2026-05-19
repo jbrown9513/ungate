@@ -3,29 +3,44 @@
 	"type": "module",
 	"exports": {
 		".": {
+			"types": "./lib/index.d.ts",
 			"import": "./lib/index.js",
-			"types": "./lib/index.d.ts"
+			"require": "./lib/index.cjs",
+			"default": "./lib/index.js"
 		},
 		"./frontend": {
+			"types": "./lib/frontend.d.ts",
 			"import": "./lib/frontend.js",
-			"types": "./lib/frontend.d.ts"
+			"require": "./lib/frontend.cjs",
+			"default": "./lib/frontend.js"
+		}
+	},
+	"typesVersions": {
+		"*": {
+			"frontend": [
+				"./lib/frontend.d.ts"
+			],
+			"*": [
+				"./lib/index.d.ts"
+			]
 		}
 	},
 	"files": [
 		"lib"
 	],
 	"scripts": {
-		"build": "pnpm run clean && tsc -p tsconfig.build.json && pnpm run build:postbuild",
-		"build:watch": "pnpm run clean && tsc-watch -p tsconfig.build.json --onCompilationComplete \"pnpm run build:postbuild\"",
-		"build:postbuild": "tsc-alias -p tsconfig.build.json --resolve-full-paths",
+		"build": "pnpm run clean && tsup",
+		"build:watch": "pnpm run clean && tsup --watch",
 		"clean": "rm -rf lib",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix"
 	},
 	"devDependencies": {
 		"@ungate/dev-kit": "workspace:*",
-		"tsc-alias": "~1.8.16",
-		"tsc-watch": "~6.2.1",
+		"tsup": "~8.5.1",
 		"typescript": "~5.7.0"
+	},
+	"dependencies": {
+		"zod": "~4.3.6"
 	}
 }

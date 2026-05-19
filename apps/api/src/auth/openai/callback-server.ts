@@ -1,10 +1,11 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
 
+import { sleep } from '@ungate/shared';
 import { config } from 'src/config';
 
 export class OpenAICallbackServer {
 	private static callbackServer: Server | null = null;
-	private static callbackServerTimeout: NodeJS.Timeout | null = null;
+	private static callbackShutdownAbort: AbortController | null = null;
 
 	public static async start(
 		onCallback: (requestUrl: string | undefined, path: string, response: ServerResponse) => Promise<void>
@@ -27,18 +28,21 @@ export class OpenAICallbackServer {
 		});
 
 		this.callbackServer = server;
-		this.callbackServerTimeout = setTimeout(
-			() => {
-				void this.stop();
-			},
-			10 * 60 * 1000
-		);
+		if (this.callbackShutdownAbort) {
+			this.callbackShutdownAbort.abort();
+		}
+
+		this.callbackShutdownAbort = new AbortController();
+		const shutdownSignal = this.callbackShutdownAbort.signal;
+		void sleep(10 * 60 * 1000, shutdownSignal)
+			.then(() => this.stop())
+			.catch(() => {});
 	}
 
 	public static async stop(): Promise<void> {
-		if (this.callbackServerTimeout) {
-			clearTimeout(this.callbackServerTimeout);
-			this.callbackServerTimeout = null;
+		if (this.callbackShutdownAbort) {
+			this.callbackShutdownAbort.abort();
+			this.callbackShutdownAbort = null;
 		}
 
 		if (!this.callbackServer) {

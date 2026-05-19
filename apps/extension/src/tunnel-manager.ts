@@ -4,15 +4,10 @@ import * as path from 'node:path';
 
 import { bin, install, use, Tunnel } from 'cloudflared';
 
-import type { LogEntry } from './utils/log-ring-buffer';
+import { RuntimeStateStore } from './runtime-state';
+import { config } from './runtime-state/config';
 
-export type TunnelStatus = 'stopped' | 'installing' | 'starting' | 'running' | 'error';
-
-export interface TunnelState {
-	status: TunnelStatus;
-	url: string | null;
-	error: string | null;
-}
+import type { LogEntry, TunnelState } from '@ungate/shared/frontend';
 
 const CLOUDFLARED_BIN_DIR = path.join(os.homedir(), '.ungate', 'bin');
 const CLOUDFLARED_BIN_PATH = path.join(CLOUDFLARED_BIN_DIR, 'cloudflared');
@@ -20,11 +15,17 @@ const CLOUDFLARED_BIN_PATH = path.join(CLOUDFLARED_BIN_DIR, 'cloudflared');
 export class TunnelManager {
 	private tunnel: Tunnel | null = null;
 	private state: TunnelState = { status: 'stopped', url: null, error: null };
+	private readonly windowId: string;
+	private autoStopTimer: NodeJS.Timeout | null = null;
 
 	constructor(
+		windowId: string,
+		private readonly isExtensionHostActive: () => boolean,
 		private readonly onStateChange: (state: TunnelState) => void,
 		private readonly onLog: (entry: LogEntry) => void
-	) {}
+	) {
+		this.windowId = windowId;
+	}
 
 	getState(): TunnelState {
 		return { ...this.state };
@@ -49,9 +50,15 @@ export class TunnelManager {
 		}
 
 		this.spawnTunnel(port);
+		this.scheduleAutoStop();
 	}
 
 	stop(): void {
+		if (this.autoStopTimer) {
+			clearInterval(this.autoStopTimer);
+			this.autoStopTimer = null;
+		}
+
 		if (this.tunnel) {
 			this.tunnel.stop();
 			this.tunnel = null;
@@ -105,6 +112,7 @@ export class TunnelManager {
 		t.on('url', (url) => {
 			this.onLog({ timestamp: Date.now(), level: 'info', message: `Tunnel URL: ${url}` });
 			this.setState({ status: 'running', url, error: null });
+			this.scheduleAutoStop();
 		});
 
 		t.on('stderr', (data) => {
@@ -140,6 +148,34 @@ export class TunnelManager {
 
 	private setState(next: TunnelState): void {
 		this.state = next;
+		void this.persistTunnelState(next).catch(() => {});
+	}
+
+	private async persistTunnelState(next: TunnelState): Promise<void> {
+		await RuntimeStateStore.mutate((current) => {
+			current.tunnel.status = next.status;
+			current.tunnel.url = next.url;
+			current.tunnel.lastSeenAt = Date.now();
+			current.tunnel.lastError = next.error;
+			current.tunnel.ownerWindowId = this.windowId;
+
+			return current;
+		});
 		this.onStateChange(next);
+	}
+
+	private scheduleAutoStop(): void {
+		if (this.autoStopTimer) {
+			return;
+		}
+
+		this.autoStopTimer = setInterval(() => {
+			const runtimeState = RuntimeStateStore.read();
+			const hasLiveClientsOnDisk = RuntimeStateStore.hasLiveClients(runtimeState);
+
+			if (!hasLiveClientsOnDisk && !this.isExtensionHostActive()) {
+				this.stop();
+			}
+		}, config.tunnelManager.autoStopCheckIntervalMs);
 	}
 }

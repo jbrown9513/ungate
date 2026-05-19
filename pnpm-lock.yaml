@@ -96,9 +96,15 @@ importers:
 
   apps/extension:
     dependencies:
+      '@ungate/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       cloudflared:
         specifier: ~0.7.1
         version: 0.7.1
+      zod:
+        specifier: ~4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ~22.15.35
@@ -121,6 +127,9 @@ importers:
       typescript:
         specifier: ~5.7.0
         version: 5.7.3
+      vitest:
+        specifier: ~4.0.18
+        version: 4.0.18(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
   apps/web:
     dependencies:
@@ -182,6 +191,9 @@ importers:
       vite:
         specifier: ~8.0.9
         version: 8.0.9(@types/node@22.15.35)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
+      vitest:
+        specifier: ~4.0.18
+        version: 4.0.18(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
   packages/dev-kit:
     dependencies:
@@ -254,22 +266,23 @@ importers:
         version: 8.57.2(eslint@9.39.4(jiti@2.6.1))(typescript@5.7.3)
       vite-tsconfig-paths:
         specifier: ~5.1.4
-        version: 5.1.4(typescript@5.7.3)(vite@8.0.9(@types/node@22.15.35)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0))
+        version: 5.1.4(typescript@5.7.3)(vite@7.3.2(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
       vitest:
         specifier: ~4.0.18
         version: 4.0.18(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
 
   packages/shared:
+    dependencies:
+      zod:
+        specifier: ~4.3.6
+        version: 4.3.6
     devDependencies:
       '@ungate/dev-kit':
         specifier: workspace:*
         version: link:../dev-kit
-      tsc-alias:
-        specifier: ~1.8.16
-        version: 1.8.16
-      tsc-watch:
-        specifier: ~6.2.1
-        version: 6.2.1(typescript@5.7.3)
+      tsup:
+        specifier: ~8.5.1
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.10)(tsx@4.21.0)(typescript@5.7.3)
       typescript:
         specifier: ~5.7.0
         version: 5.7.3
@@ -9357,6 +9370,17 @@ snapshots:
 
   version-range@4.15.0: {}
 
+  vite-tsconfig-paths@5.1.4(typescript@5.7.3)(vite@7.3.2(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)):
+    dependencies:
+      debug: 4.4.3
+      globrex: 0.1.2
+      tsconfck: 3.1.6(typescript@5.7.3)
+    optionalDependencies:
+      vite: 7.3.2(@types/node@22.15.35)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)
+    transitivePeerDependencies:
+      - supports-color
+      - typescript
+
   vite-tsconfig-paths@5.1.4(typescript@5.7.3)(vite@8.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.15.35)(esbuild@0.27.4)(jiti@2.6.1)(tsx@4.21.0)):
     dependencies:
       debug: 4.4.3
@@ -9364,17 +9388,6 @@ snapshots:
       tsconfck: 3.1.6(typescript@5.7.3)
     optionalDependencies:
       vite: 8.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.15.35)(esbuild@0.27.4)(jiti@2.6.1)(tsx@4.21.0)
-    transitivePeerDependencies:
-      - supports-color
-      - typescript
-
-  vite-tsconfig-paths@5.1.4(typescript@5.7.3)(vite@8.0.9(@types/node@22.15.35)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)):
-    dependencies:
-      debug: 4.4.3
-      globrex: 0.1.2
-      tsconfck: 3.1.6(typescript@5.7.3)
-    optionalDependencies:
-      vite: 8.0.9(@types/node@22.15.35)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)
     transitivePeerDependencies:
       - supports-color
       - typescript

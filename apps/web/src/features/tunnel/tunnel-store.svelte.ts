@@ -1,6 +1,6 @@
-import { postExtensionMessage } from '$shared/vscode';
+import { DEFAULT_KEY_FIX_ENABLED, type ExtensionToWebview, type TunnelState } from '@ungate/shared/frontend';
 
-import type { TunnelState, ExtensionToWebview } from '@ungate/shared/frontend';
+import { postExtensionMessage } from '$shared/vscode';
 
 interface TunnelStore {
 	readonly tunnel: TunnelState;
@@ -14,7 +14,7 @@ interface TunnelStore {
 const defaultState: TunnelState = { status: 'stopped', url: null, error: null };
 
 let tunnel = $state<TunnelState>({ ...defaultState });
-let keyFixEnabled = $state(true);
+let keyFixEnabled = $state(DEFAULT_KEY_FIX_ENABLED);
 
 function handleMessage(event: MessageEvent): void {
 	const message = event.data as ExtensionToWebview;
