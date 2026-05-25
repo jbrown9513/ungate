@@ -97,6 +97,9 @@ export class ExtensionController {
 			},
 			isExtensionHostActive: () => {
 				return this.extensionHostActive;
+			},
+			getWindowId: () => {
+				return this.windowId;
 			}
 		});
 
@@ -434,6 +437,9 @@ export class ExtensionController {
 	}
 
 	private async bootstrapRuntime(): Promise<void> {
+		await RuntimeStateStore.touchClient(this.windowId);
+		const runtimeState = await RuntimeStateStore.prepareApiForBootstrap();
+		this.startApiAsLeaderIfNeeded(runtimeState);
 		await this.syncFromRuntimeState();
 	}
 
@@ -445,7 +451,6 @@ export class ExtensionController {
 			runtimeState = await RuntimeStateStore.touchClient(this.windowId);
 		}
 
-		this.ensureLeaderOwnsApi(runtimeState);
 		await this.keyFix.applySharedState(runtimeState.keyFix.enabled);
 		this.applyRuntimeState(runtimeState);
 		this.apiServer.syncLeaderHealthMonitor(this.isLeaderWindow(runtimeState));
@@ -574,14 +579,16 @@ export class ExtensionController {
 		return leaderWindowId === this.windowId;
 	}
 
-	private ensureLeaderOwnsApi(runtimeState: RuntimeState): void {
-		const isLeader = this.isLeaderWindow(runtimeState);
-
-		if (!isLeader) {
+	private startApiAsLeaderIfNeeded(runtimeState: RuntimeState): void {
+		if (!this.isLeaderWindow(runtimeState)) {
 			return;
 		}
 
-		if (this.apiServer.getPort()) {
+		if (this.apiServer.getPort() || this.apiServer.isStartupInProgress()) {
+			return;
+		}
+
+		if (RuntimeStateStore.isApiStartSuppressed(runtimeState)) {
 			return;
 		}
 

@@ -14,7 +14,9 @@ export class TestHelper {
 				port: apiPort,
 				status: apiPort ? 'running' : 'stopped',
 				lastSeenAt: Date.now(),
-				lastError: null
+				lastError: null,
+				ownerWindowId: null,
+				startSuppressed: false
 			},
 			tunnel: {
 				status: 'stopped',

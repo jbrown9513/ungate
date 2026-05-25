@@ -75,7 +75,7 @@ sequenceDiagram
 ## Prerequisites
 
 - Cursor with custom OpenAI provider support enabled.
-- Node.js 20+ for local development and manual API runs.
+- System Node.js installed on the machine. Ungate starts its local API through the system Node runtime.
 - Outbound internet access for OAuth and provider APIs.
 - A reachable public tunnel URL because Cursor backend cannot call `localhost`.
 

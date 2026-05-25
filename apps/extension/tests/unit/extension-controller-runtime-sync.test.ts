@@ -10,6 +10,7 @@ interface MockApiServer {
 	stop: ReturnType<typeof vi.fn>;
 	restart: ReturnType<typeof vi.fn>;
 	getPort: ReturnType<typeof vi.fn>;
+	isStartupInProgress: ReturnType<typeof vi.fn>;
 	syncLeaderHealthMonitor: ReturnType<typeof vi.fn>;
 }
 
@@ -27,7 +28,9 @@ interface MockDashboard {
 
 interface ExtensionControllerInternals {
 	currentPort: number | null;
+	bootstrapRuntime(): Promise<void>;
 	syncFromRuntimeState(): Promise<void>;
+	startApiAsLeaderIfNeeded(runtimeState: RuntimeState): void;
 }
 
 const createOutputChannelMock = vi.fn(() => {
@@ -58,11 +61,13 @@ const runtimeTouchClientMock = vi.fn<(windowId: string) => Promise<RuntimeState>
 const runtimeRemoveClientMock = vi.fn<(windowId: string) => Promise<RuntimeState>>();
 const runtimeGetLeaderWindowIdMock = vi.fn<(state: RuntimeState) => string | null>();
 const runtimePeekCommandMock = vi.fn<() => null>();
+const prepareApiForBootstrapMock = vi.fn(() => Promise.resolve(runtimeReadMock()));
 
 const apiServerStartMock = vi.fn().mockResolvedValue(undefined);
 const apiServerStopMock = vi.fn().mockResolvedValue(undefined);
 const apiServerRestartMock = vi.fn().mockResolvedValue(undefined);
 const apiServerGetPortMock = vi.fn().mockReturnValue(null);
+const apiServerIsStartupInProgressMock = vi.fn().mockReturnValue(false);
 const apiServerSyncLeaderHealthMonitorMock = vi.fn();
 
 vi.mock('vscode', () => {
@@ -106,7 +111,13 @@ vi.mock('../../src/runtime-state', () => {
 			touchClient: runtimeTouchClientMock,
 			removeClient: runtimeRemoveClientMock,
 			getLeaderWindowId: runtimeGetLeaderWindowIdMock,
-			peekCommand: runtimePeekCommandMock
+			peekCommand: runtimePeekCommandMock,
+			isApiStartSuppressed: (state?: RuntimeState) => {
+				const runtimeState = state ?? runtimeReadMock();
+
+				return runtimeState.api.startSuppressed === true;
+			},
+			prepareApiForBootstrap: (...args: unknown[]) => prepareApiForBootstrapMock(...args)
 		}
 	};
 });
@@ -158,6 +169,7 @@ vi.mock('../../src/api-server', () => {
 			stop = apiServerStopMock;
 			restart = apiServerRestartMock;
 			getPort = apiServerGetPortMock;
+			isStartupInProgress = apiServerIsStartupInProgressMock;
 			syncLeaderHealthMonitor = apiServerSyncLeaderHealthMonitorMock;
 		}
 	};
@@ -191,6 +203,7 @@ function createController(windowId: string): {
 		stop: vi.fn().mockResolvedValue(undefined),
 		restart: vi.fn().mockResolvedValue(undefined),
 		getPort: vi.fn().mockReturnValue(null),
+		isStartupInProgress: vi.fn().mockReturnValue(false),
 		syncLeaderHealthMonitor: vi.fn()
 	};
 	const tunnelManager: MockTunnelManager = {
@@ -265,10 +278,22 @@ describe('ExtensionController', () => {
 		runtimeGetLeaderWindowIdMock.mockReset();
 		runtimePeekCommandMock.mockReset();
 		runtimePeekCommandMock.mockReturnValue(null);
+		prepareApiForBootstrapMock.mockReset();
+		prepareApiForBootstrapMock.mockImplementation(() => {
+			const runtimeState = runtimeReadMock();
+			runtimeState.api.startSuppressed = false;
+			runtimeState.api.status = 'stopped';
+			runtimeState.api.lastError = null;
+			runtimeReadMock.mockReturnValue(runtimeState);
+
+			return Promise.resolve(runtimeState);
+		});
 		apiServerStartMock.mockClear();
 		apiServerStopMock.mockClear();
 		apiServerRestartMock.mockClear();
 		apiServerGetPortMock.mockClear();
+		apiServerIsStartupInProgressMock.mockClear();
+		apiServerIsStartupInProgressMock.mockReturnValue(false);
 		apiServerSyncLeaderHealthMonitorMock.mockClear();
 		apiServerGetPortMock.mockReturnValue(null);
 		apiServerStartMock.mockResolvedValue(undefined);
@@ -295,6 +320,33 @@ describe('ExtensionController', () => {
 		});
 	});
 
+	it('does not start api from periodic sync', async () => {
+		const { controller } = createController('window-a');
+		const runtimeState = createRuntimeState(['window-a'], null);
+		runtimeReadMock.mockReturnValue(runtimeState);
+		runtimeGetLiveClientIdsMock.mockReturnValue(['window-a']);
+		runtimeTouchClientMock.mockResolvedValue(runtimeState);
+		runtimeGetLeaderWindowIdMock.mockReturnValue('window-a');
+
+		await getInternals(controller).syncFromRuntimeState();
+
+		expect(apiServerStartMock).not.toHaveBeenCalled();
+	});
+
+	it('does not start api from sync while start is suppressed', async () => {
+		const { controller } = createController('window-a');
+		const runtimeState = createRuntimeState(['window-a'], null);
+		runtimeState.api.startSuppressed = true;
+		runtimeReadMock.mockReturnValue(runtimeState);
+		runtimeGetLiveClientIdsMock.mockReturnValue(['window-a']);
+		runtimeTouchClientMock.mockResolvedValue(runtimeState);
+		runtimeGetLeaderWindowIdMock.mockReturnValue('window-a');
+
+		await getInternals(controller).syncFromRuntimeState();
+
+		expect(apiServerStartMock).not.toHaveBeenCalled();
+	});
+
 	it('bootstraps runtime sync immediately on activate', async () => {
 		const { controller } = createController('window-a');
 		const runtimeState = createRuntimeState(['window-a'], null);
@@ -312,7 +364,7 @@ describe('ExtensionController', () => {
 
 		await vi.waitFor(() => {
 			expect(apiServerStartMock).toHaveBeenCalledTimes(1);
-			expect(runtimeTouchClientMock).not.toHaveBeenCalled();
+			expect(runtimeTouchClientMock).toHaveBeenCalled();
 		});
 	});
 
@@ -384,19 +436,19 @@ describe('ExtensionController', () => {
 		expect(apiServer.syncLeaderHealthMonitor).toHaveBeenCalledWith(false);
 	});
 
-	it('starts the api when the current window is the leader and no local port exists', async () => {
+	it('starts the api on bootstrap when the current window is the leader', async () => {
 		const { controller, apiServer } = createController('window-a');
 		const internals = getInternals(controller);
 		const runtimeState = createRuntimeState(['window-a'], null);
 		runtimeReadMock.mockReturnValue(runtimeState);
 		runtimeGetLiveClientIdsMock.mockReturnValue(['window-a']);
+		runtimeTouchClientMock.mockResolvedValue(runtimeState);
 		runtimeGetLeaderWindowIdMock.mockReturnValue('window-a');
 		apiServer.getPort.mockReturnValue(null);
 
-		await internals.syncFromRuntimeState();
+		await internals.bootstrapRuntime();
 
 		expect(apiServer.start).toHaveBeenCalledTimes(1);
-		expect(apiServer.syncLeaderHealthMonitor).toHaveBeenCalledWith(true);
 	});
 
 	it('does not start the api when the current window is not the leader', async () => {
@@ -427,6 +479,22 @@ describe('ExtensionController', () => {
 
 		expect(apiServer.start).not.toHaveBeenCalled();
 		expect(apiServer.syncLeaderHealthMonitor).toHaveBeenCalledWith(true);
+	});
+
+	it('does not start the api on bootstrap when startup is already in progress locally', async () => {
+		const { controller, apiServer } = createController('window-a');
+		const internals = getInternals(controller);
+		const runtimeState = createRuntimeState(['window-a'], null);
+		runtimeReadMock.mockReturnValue(runtimeState);
+		runtimeGetLiveClientIdsMock.mockReturnValue(['window-a']);
+		runtimeTouchClientMock.mockResolvedValue(runtimeState);
+		runtimeGetLeaderWindowIdMock.mockReturnValue('window-a');
+		apiServer.getPort.mockReturnValue(null);
+		apiServer.isStartupInProgress.mockReturnValue(true);
+
+		await internals.bootstrapRuntime();
+
+		expect(apiServer.start).not.toHaveBeenCalled();
 	});
 
 	it('applies shared key-fix state during runtime sync', async () => {

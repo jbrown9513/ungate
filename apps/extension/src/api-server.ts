@@ -1,6 +1,4 @@
 import * as cp from 'node:child_process';
-import * as fs from 'node:fs';
-import * as https from 'node:https';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -9,12 +7,11 @@ import * as vscode from 'vscode';
 
 import { RuntimeStateStore } from './runtime-state';
 import { config } from './runtime-state/config';
+import { BetterSqlite3Installer } from './utils/better-sqlite3-installer';
 import { NodeResolver } from './utils/node-resolver';
 
-import type { Writable } from 'node:stream';
-
 const HEALTH_CHECK_URL = (port: number) => `http://localhost:${port}/health`;
-const BETTER_SQLITE3_VERSION = '12.9.0';
+const STARTING_STATE_TIMEOUT_MS = 10000;
 
 interface ApiServerCallbacks {
 	onLog(level: LogEntry['level'], message: string): void;
@@ -22,6 +19,7 @@ interface ApiServerCallbacks {
 	onStatusChange(status: ServerStatus): void;
 	isLeaderWindow(): boolean;
 	isExtensionHostActive(): boolean;
+	getWindowId(): string;
 }
 
 export class ApiServer {
@@ -35,6 +33,8 @@ export class ApiServer {
 	private runtimePath = '';
 	private noClientsSince: number | null = null;
 	private addressInUsePort: number | null = null;
+	private startPromise: Promise<void> | null = null;
+	private restartInProgress = false;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -42,7 +42,91 @@ export class ApiServer {
 	) {}
 
 	async start(): Promise<void> {
+		if (this.isAutoStartBlocked()) {
+			return;
+		}
+
 		if (this.process) {
+			return;
+		}
+
+		if (this.startPromise) {
+			return this.startPromise;
+		}
+
+		this.startPromise = this.doStart();
+
+		try {
+			await this.startPromise;
+		} finally {
+			this.startPromise = null;
+		}
+	}
+
+	isStartupInProgress(): boolean {
+		return this.startPromise !== null;
+	}
+
+	async restart(): Promise<void> {
+		this.restartInProgress = true;
+		this.port = null;
+		await RuntimeStateStore.resetApiForRestart();
+		this.restartRequested = true;
+		await this.setStatus('stopped');
+
+		if (!this.process) {
+			try {
+				await this.start();
+			} finally {
+				this.restartInProgress = false;
+				this.restartRequested = false;
+			}
+
+			return;
+		}
+
+		this.process.kill();
+	}
+
+	async stop(): Promise<void> {
+		this.stopHealthCheck();
+		if (this.process) {
+			this.shutDownDeliberately = true;
+		}
+		this.process?.kill();
+		this.process = null;
+		this.noClientsSince = null;
+
+		if (RuntimeStateStore.isApiStartSuppressed()) {
+			this.lastStatus = 'error';
+
+			return;
+		}
+
+		this.lastStatus = 'stopped';
+		await this.writeRuntimeState('stopped', null);
+	}
+
+	getPort(): number | null {
+		return this.port;
+	}
+
+	syncLeaderHealthMonitor(isLeader: boolean): void {
+		if (!isLeader) {
+			this.stopHealthCheck();
+
+			return;
+		}
+
+		const hasRuntimeTarget = this.process !== null || this.port !== null || this.startPromise !== null;
+
+		if (hasRuntimeTarget && !this.healthCheckTimer) {
+			this.startHealthCheck();
+		}
+	}
+
+	private async doStart(): Promise<void> {
+		if (this.isAutoStartBlocked()) {
 			return;
 		}
 
@@ -62,55 +146,46 @@ export class ApiServer {
 			}
 		}
 
-		await this.ensureNativeDeps();
-		this.spawn();
-	}
+		if (runtimeState.api.status === 'starting' && runtimeState.api.ownerWindowId !== this.callbacks.getWindowId()) {
+			const startingStateAge = Date.now() - runtimeState.api.lastSeenAt;
 
-	async restart(): Promise<void> {
-		this.restartRequested = true;
-		await this.setStatus('stopped');
+			if (startingStateAge < STARTING_STATE_TIMEOUT_MS) {
+				return;
+			}
+		}
 
-		if (!this.process) {
-			await sleep(0);
+		await this.setStatus('starting');
+
+		try {
+			await this.ensureNativeDeps();
 			this.spawn();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
 
-			return;
+			await this.recordApiFailure(message);
+			throw err;
 		}
-
-		this.process.kill();
 	}
 
-	async stop(): Promise<void> {
-		this.stopHealthCheck();
-		if (this.process) {
-			this.shutDownDeliberately = true;
+	private isAutoStartBlocked(): boolean {
+		if (this.restartInProgress) {
+			return false;
 		}
-		this.process?.kill();
-		this.process = null;
-		this.noClientsSince = null;
-		this.lastStatus = 'stopped';
-		await this.writeRuntimeState('stopped', null);
+
+		return RuntimeStateStore.isApiStartSuppressed();
 	}
 
-	getPort(): number | null {
-		return this.port;
-	}
-
-	syncLeaderHealthMonitor(isLeader: boolean): void {
-		if (!isLeader) {
-			this.stopHealthCheck();
-
-			return;
-		}
-
-		const hasRuntimeTarget = this.process !== null || this.port !== null;
-
-		if (hasRuntimeTarget && !this.healthCheckTimer) {
-			this.startHealthCheck();
-		}
+	private async recordApiFailure(message: string): Promise<void> {
+		this.lastStatus = 'error';
+		await RuntimeStateStore.suppressApiAutoStart(message);
+		this.callbacks.onStatusChange('error');
 	}
 
 	private spawn(): void {
+		if (!this.callbacks.isLeaderWindow() || !this.callbacks.isExtensionHostActive()) {
+			return;
+		}
+
 		const cwd = this.getServerCwd();
 		this.stdoutBuffer = '';
 
@@ -120,6 +195,7 @@ export class ApiServer {
 
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
+			UNGATE_BETTER_SQLITE3_NATIVE_BINDING: BetterSqlite3Installer.getInstalledBinaryPath(cwd),
 			...(isDev ? { DB_PATH: path.join(os.homedir(), '.ungate', 'data-dev.db') } : { DRIZZLE_PATH: path.join(cwd, 'drizzle') })
 		};
 
@@ -129,7 +205,7 @@ export class ApiServer {
 
 		this.process = cp.spawn(runtime, nodeArgs, { cwd, env, stdio: 'pipe', detached: true });
 		this.process.unref();
-		void this.writeRuntimeState('stopped', null).catch(() => {});
+		void this.writeRuntimeState('starting', null).catch(() => {});
 
 		this.process.stdout?.on('data', (data: Buffer) => this.onStdout(data));
 		this.process.stderr?.on('data', (data: Buffer) => this.onStderr(data));
@@ -192,11 +268,22 @@ export class ApiServer {
 		this.callbacks.onLog(level, `[process] exit code=${code} signal=${signal}`);
 
 		if (this.restartRequested) {
-			this.restartRequested = false;
 			this.shutDownDeliberately = false;
 			this.lastStatus = 'stopped';
-			void sleep(config.apiServer.restartDelayMs).then(() => {
-				this.spawn();
+			void sleep(config.apiServer.restartDelayMs).then(async () => {
+				if (!this.shouldRespawn()) {
+					this.restartInProgress = false;
+					this.restartRequested = false;
+
+					return;
+				}
+
+				try {
+					await this.start();
+				} finally {
+					this.restartInProgress = false;
+					this.restartRequested = false;
+				}
 			});
 
 			return;
@@ -211,6 +298,10 @@ export class ApiServer {
 		if (code === 0) {
 			this.lastStatus = 'stopped';
 			void sleep(config.apiServer.restartDelayMs).then(() => {
+				if (!this.shouldRespawn()) {
+					return;
+				}
+
 				this.spawn();
 			});
 
@@ -220,21 +311,29 @@ export class ApiServer {
 		if (this.addressInUsePort) {
 			const addressInUsePort = this.addressInUsePort;
 			this.addressInUsePort = null;
-			void this.tryAttachToRunningPort(addressInUsePort).catch(() => {
-				void this.setStatus('error').catch(() => {});
-			});
+			void this.tryAttachToRunningPort(addressInUsePort).catch(() => {});
 
 			return;
 		}
 
-		void this.setStatus('error').catch(() => {});
+		const message = `[process] exit code=${code} signal=${signal}`;
+
+		void this.recordApiFailure(message).catch(() => {});
+	}
+
+	private shouldRespawn(): boolean {
+		if (!this.restartInProgress && this.isAutoStartBlocked()) {
+			return false;
+		}
+
+		return this.callbacks.isLeaderWindow() && this.callbacks.isExtensionHostActive();
 	}
 
 	private async tryAttachToRunningPort(port: number): Promise<void> {
 		const isAlive = await this.checkPortHealth(port);
 
 		if (!isAlive) {
-			await this.setStatus('error');
+			await this.recordApiFailure(`[process] port ${port} is not healthy`);
 
 			return;
 		}
@@ -247,9 +346,7 @@ export class ApiServer {
 
 	private async onSpawnProcessError(err: Error): Promise<void> {
 		this.callbacks.onLog('error', `[process] error: ${err.message}`);
-		await this.writeRuntimeState('error', err.message);
-		this.lastStatus = 'error';
-		this.callbacks.onStatusChange('error');
+		await this.recordApiFailure(err.message);
 	}
 
 	private startHealthCheck(): void {
@@ -306,10 +403,10 @@ export class ApiServer {
 					this.callbacks.onPortDetected(this.port);
 				}
 			} else {
-				await this.setStatus('error');
+				await this.recordApiFailure(`[process] health check failed with status ${res.status}`);
 			}
 		} catch {
-			await this.setStatus('error');
+			await this.recordApiFailure('[process] health check failed');
 		}
 	}
 
@@ -328,6 +425,10 @@ export class ApiServer {
 
 	private async writeRuntimeState(status: ServerStatus, errorMessage: string | null): Promise<void> {
 		await RuntimeStateStore.mutate((current) => {
+			if (current.api.status === 'error' && status !== 'error' && status !== 'stopped') {
+				return current;
+			}
+
 			const now = Date.now();
 			let pid: number | null = null;
 
@@ -341,6 +442,12 @@ export class ApiServer {
 			current.api.lastSeenAt = now;
 			current.api.lastError = errorMessage;
 
+			if (status === 'starting') {
+				current.api.ownerWindowId = this.callbacks.getWindowId();
+			} else if (status === 'stopped' || status === 'error') {
+				current.api.ownerWindowId = null;
+			}
+
 			return current;
 		});
 	}
@@ -352,16 +459,6 @@ export class ApiServer {
 			});
 
 			return response.ok;
-		} catch {
-			return false;
-		}
-	}
-
-	private isProcessAlive(pid: number): boolean {
-		try {
-			process.kill(pid, 0);
-
-			return true;
 		} catch {
 			return false;
 		}
@@ -393,66 +490,12 @@ export class ApiServer {
 		const apiDir = this.getServerCwd();
 		const runtime = this.resolveRuntimePath(NodeResolver.resolve(process.env.UNGATE_NODE_BIN));
 		this.runtimePath = runtime;
-		const isLoadableBeforeInstall = await this.canLoadBetterSqlite3(runtime, apiDir);
 
-		if (isLoadableBeforeInstall) {
-			return;
-		}
-		const sqliteDir = fs.realpathSync(path.join(apiDir, 'node_modules', 'better-sqlite3'));
-		const binaryPath = path.join(sqliteDir, 'build', 'Release', 'better_sqlite3.node');
-
-		if (fs.existsSync(binaryPath)) {
-			const isLoadable = await this.canLoadBetterSqlite3(runtime, apiDir);
-
-			if (isLoadable) {
-				return;
+		await BetterSqlite3Installer.ensureInstalled(apiDir, runtime, {
+			onLog: (level, message) => {
+				this.callbacks.onLog(level, message);
 			}
-
-			this.callbacks.onLog('warn', '[native] Existing better-sqlite3 binary is incompatible, reinstalling');
-			fs.rmSync(binaryPath, { force: true });
-		}
-
-		const info = NodeResolver.inspect(runtime);
-		const tarName = `better-sqlite3-v${BETTER_SQLITE3_VERSION}-node-v${info.abi}-${info.platform}-${info.arch}.tar.gz`;
-		const url = `https://github.com/WiseLibs/better-sqlite3/releases/download/v${BETTER_SQLITE3_VERSION}/${tarName}`;
-		let installError: Error | null = null;
-
-		this.callbacks.onLog('info', `[native] Using runtime: ${runtime}`);
-		this.callbacks.onLog('info', `[native] Downloading ${tarName}...`);
-
-		// Ensure repeated starts are idempotent when tar refuses to overwrite.
-		fs.rmSync(binaryPath, { force: true });
-
-		try {
-			await this.installPrebuiltBinary(url, sqliteDir, binaryPath);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			installError = err instanceof Error ? err : new Error(message);
-
-			if (message.includes('HTTP 404')) {
-				this.callbacks.onLog('error', `[native] No prebuilt binary for ABI ${info.abi}`);
-			} else {
-				this.callbacks.onLog('error', `[native] Prebuilt install failed: ${message}`);
-			}
-		}
-
-		const prebuiltLoadable = await this.canLoadBetterSqlite3(runtime, apiDir);
-
-		if (prebuiltLoadable) {
-			this.callbacks.onLog('info', '[native] better-sqlite3 binary installed');
-
-			return;
-		}
-
-		if (installError?.message.includes('HTTP 404')) {
-			throw new Error(
-				`[native] No prebuilt better-sqlite3 binary for Node ABI ${info.abi} (${info.platform}-${info.arch}). ` +
-					'Use Node 22 runtime (ABI 127) or set UNGATE_NODE_BIN to a supported Node binary.'
-			);
-		}
-
-		const installErrorMessage = installError ? installError.message : 'unknown prebuilt install error';
-		throw new Error(`[native] better-sqlite3 prebuilt installation failed: ${installErrorMessage}`);
+		});
 	}
 
 	private resolveRuntimePath(runtime: string): string {
@@ -469,94 +512,5 @@ export class ApiServer {
 		}
 
 		return absolutePath;
-	}
-
-	private async installPrebuiltBinary(url: string, sqliteDir: string, binaryPath: string): Promise<void> {
-		await new Promise<void>((resolve, reject) => {
-			const extract = cp.spawn('tar', ['xzf', '-', '-C', sqliteDir], { stdio: ['pipe', 'pipe', 'pipe'] });
-			const stdin = extract.stdin;
-
-			if (!stdin) {
-				reject(new Error('tar stdin is unavailable'));
-
-				return;
-			}
-
-			extract.stderr?.on('data', (data: Buffer) => {
-				this.callbacks.onLog('error', `[native] tar: ${data.toString().trim()}`);
-			});
-
-			extract.on('exit', (code) => {
-				if (code === 0) {
-					resolve();
-
-					return;
-				}
-
-				if (fs.existsSync(binaryPath)) {
-					this.callbacks.onLog('warn', '[native] better-sqlite3 binary already present, continuing');
-					resolve();
-
-					return;
-				}
-
-				reject(new Error(`tar exited with code ${code}`));
-			});
-
-			extract.on('error', reject);
-
-			this.download(url, stdin, reject);
-		});
-	}
-
-	private async canLoadBetterSqlite3(runtime: string, apiDir: string): Promise<boolean> {
-		return await new Promise<boolean>((resolve) => {
-			const child = cp.spawn(
-				runtime,
-				[
-					'-e',
-					"const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.pragma('journal_mode = WAL'); db.close();"
-				],
-				{
-					cwd: apiDir,
-					stdio: ['ignore', 'ignore', 'pipe']
-				}
-			);
-
-			child.stderr?.on('data', (data: Buffer) => {
-				const text = data.toString().trim();
-
-				if (text) {
-					this.callbacks.onLog('warn', `[native] ${text}`);
-				}
-			});
-
-			child.on('error', () => resolve(false));
-			child.on('exit', (code) => resolve(code === 0));
-		});
-	}
-
-	private download(targetUrl: string, dest: Writable, reject: (err: Error) => void): void {
-		https
-			.get(targetUrl, { headers: { 'User-Agent': 'ungate-extension' } }, (res) => {
-				if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-					this.download(res.headers.location, dest, reject);
-
-					return;
-				}
-
-				if (!res.statusCode || res.statusCode !== 200) {
-					dest.destroy();
-					reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-
-					return;
-				}
-
-				res.pipe(dest);
-			})
-			.on('error', (err: Error) => {
-				dest.destroy();
-				reject(err);
-			});
 	}
 }

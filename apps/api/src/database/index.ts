@@ -15,6 +15,7 @@ const MIGRATIONS_PATH = process.env.DRIZZLE_PATH ?? join(import.meta.dirname, '.
 let _db: DrizzleDb | null = null;
 let _sqlite: DatabaseType | null = null;
 let _dbPath: string | null = null;
+const nativeBindingPath = process.env.UNGATE_BETTER_SQLITE3_NATIVE_BINDING;
 
 function resolveDbPath(): string {
 	return process.env.DB_PATH ?? join(homedir(), '.ungate', 'data.db');
@@ -29,8 +30,9 @@ export function getDb(): DrizzleDb {
 
 	if (!_db) {
 		mkdirSync(dirname(dbPath), { recursive: true });
+		const sqliteOptions = nativeBindingPath ? { nativeBinding: nativeBindingPath } : undefined;
 
-		_sqlite = new BetterSqlite3(dbPath);
+		_sqlite = new BetterSqlite3(dbPath, sqliteOptions);
 		_sqlite.pragma('journal_mode = WAL');
 
 		_db = drizzle(_sqlite, { schema, casing: 'snake_case' });

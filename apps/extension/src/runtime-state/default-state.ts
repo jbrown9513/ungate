@@ -10,7 +10,9 @@ export class RuntimeStateDefaults {
 				port: null,
 				status: 'stopped',
 				lastSeenAt: now,
-				lastError: null
+				lastError: null,
+				ownerWindowId: null,
+				startSuppressed: false
 			},
 			tunnel: {
 				status: 'stopped',
