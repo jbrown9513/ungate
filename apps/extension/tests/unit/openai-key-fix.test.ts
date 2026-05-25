@@ -44,6 +44,20 @@ vi.mock('../../src/runtime-state', () => {
 	};
 });
 
+vi.mock('../../src/utils/cursor-state-db-reader', () => {
+	return {
+		CursorStateDbReader: class {
+			init() {
+				return Promise.resolve(null);
+			}
+
+			readItemTableValue() {
+				return Promise.resolve(null);
+			}
+		}
+	};
+});
+
 vi.mock('node:fs', () => {
 	return {
 		existsSync: mocks.existsSyncMock
@@ -64,16 +78,15 @@ import { TestHelper } from './helpers/test-helper';
 interface OpenAiKeyFixInternals {
 	state: { enabled: boolean; activated: boolean; running: boolean };
 	runtime: { pollInterval: NodeJS.Timeout | null };
-	sqlite3Path: string | null;
 	readUseOpenAiKey(): Promise<boolean | undefined>;
 	checkAndFix(): Promise<void>;
 	reconcileMonitoring(): void;
 }
 
-function createLeaderKeyFix(windowIds: string[] = ['window-a']): {
+async function createLeaderKeyFix(windowIds: string[] = ['window-a']): Promise<{
 	keyFix: OpenAiKeyFix;
 	internals: OpenAiKeyFixInternals;
-} {
+}> {
 	const runtimeState = TestHelper.createRuntimeState(windowIds, null);
 	runtimeState.keyFix.enabled = true;
 	runtimeReadMock.mockReturnValue(runtimeState);
@@ -86,9 +99,9 @@ function createLeaderKeyFix(windowIds: string[] = ['window-a']): {
 	);
 	const internals = keyFix as unknown as OpenAiKeyFixInternals;
 
-	internals.sqlite3Path = '/usr/bin/sqlite3';
 	internals.state.activated = true;
 	internals.state.enabled = true;
+	await keyFix.activate();
 
 	return { keyFix, internals };
 }
@@ -134,8 +147,8 @@ describe('OpenAiKeyFix', () => {
 		expect(internals.runtime.pollInterval).toBeNull();
 	});
 
-	it('keeps the poll timer running when reconcileMonitoring is called again while already monitoring', () => {
-		const { internals } = createLeaderKeyFix();
+	it('keeps the poll timer running when reconcileMonitoring is called again while already monitoring', async () => {
+		const { internals } = await createLeaderKeyFix();
 
 		internals.reconcileMonitoring();
 		const pollInterval = internals.runtime.pollInterval;
@@ -147,7 +160,7 @@ describe('OpenAiKeyFix', () => {
 
 	it('re-enables the Cursor key when monitoring poll detects it was turned off', async () => {
 		vi.useFakeTimers();
-		const { internals } = createLeaderKeyFix();
+		const { internals } = await createLeaderKeyFix();
 		const readSpy = vi.spyOn(internals, 'readUseOpenAiKey').mockResolvedValue(false);
 
 		internals.reconcileMonitoring();
@@ -158,7 +171,7 @@ describe('OpenAiKeyFix', () => {
 	});
 
 	it('re-enables the Cursor key when checkAndFix sees useOpenAIKey is false', async () => {
-		const { internals } = createLeaderKeyFix();
+		const { internals } = await createLeaderKeyFix();
 
 		vi.spyOn(internals, 'readUseOpenAiKey').mockResolvedValue(false);
 		await internals.checkAndFix();
@@ -197,16 +210,12 @@ describe('OpenAiKeyFix', () => {
 			() => {},
 			() => true
 		);
-		const internals = keyFix as unknown as OpenAiKeyFixInternals & {
-			sqlite3Path: string | null;
-			readUseOpenAiKey(): Promise<boolean | undefined>;
-		};
+		const internals = keyFix as unknown as OpenAiKeyFixInternals;
 
 		await keyFix.applySharedState(true);
 		expect(keyFix.isEnabled()).toBe(true);
 		expect(internals.state.enabled).toBe(false);
 
-		vi.spyOn(internals, 'findSqlite3').mockResolvedValue('/usr/bin/sqlite3');
 		vi.spyOn(internals, 'readUseOpenAiKey').mockResolvedValue(false);
 		await keyFix.activate();
 
@@ -225,12 +234,8 @@ describe('OpenAiKeyFix', () => {
 			() => {},
 			() => false
 		);
-		const internals = keyFix as unknown as OpenAiKeyFixInternals & {
-			sqlite3Path: string | null;
-			readUseOpenAiKey(): Promise<boolean | undefined>;
-		};
+		const internals = keyFix as unknown as OpenAiKeyFixInternals;
 
-		internals.sqlite3Path = '/usr/bin/sqlite3';
 		internals.state.activated = true;
 		vi.spyOn(internals, 'readUseOpenAiKey').mockResolvedValue(false);
 		await keyFix.setEnabledByUser(true);

@@ -7,6 +7,7 @@ import type { ApiStatus as ApiBarStatus, TunnelState } from '@ungate/shared/fron
 export class ExtensionStatusBar {
 	public static formatApiTip(apiState: ApiBarStatus): string {
 		const statusLine: Record<ApiBarStatus, string> = {
+			starting: '$(sync~spin) API: starting',
 			running: '$(check) API: running',
 			stopped: '$(circle-slash) API: stopped',
 			error: '$(error) API: error'
@@ -89,6 +90,7 @@ export class ExtensionStatusBar {
 
 	public static barText(apiState: ApiBarStatus, tunnel: TunnelState): string {
 		const apiIcon: Record<ApiBarStatus, string> = {
+			starting: '$(sync~spin)',
 			running: '$(check)',
 			stopped: '$(circle-slash)',
 			error: '$(error)'

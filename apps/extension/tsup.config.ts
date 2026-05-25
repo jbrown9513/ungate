@@ -9,6 +9,6 @@ export default defineConfig({
 	splitting: false,
 	sourcemap: false,
 	clean: true,
-	noExternal: ['cloudflared', '@ungate/shared', 'zod'],
+	noExternal: ['cloudflared', '@ungate/shared', 'zod', 'tar'],
 	external: ['vscode']
 });

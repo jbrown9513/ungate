@@ -1,15 +1,12 @@
-import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
 
 import { DEFAULT_KEY_FIX_ENABLED, sleep } from '@ungate/shared/frontend';
 import * as vscode from 'vscode';
 
 import { RuntimeStateStore } from './runtime-state';
 import { config as runtimeStateConfig } from './runtime-state/config';
-
-const execFileAsync = promisify(execFile);
+import { CursorStateDbReader } from './utils/cursor-state-db-reader';
 
 const config = {
 	logPrefix: '[openai-key-fix]',
@@ -25,11 +22,6 @@ const config = {
 		initialCheckMs: runtimeStateConfig.openAiKeyFix.initialCheckMs,
 		debounceMs: runtimeStateConfig.openAiKeyFix.debounceMs,
 		pollMs: runtimeStateConfig.openAiKeyFix.pollMs
-	},
-	sql: {
-		readOpenAiKey(storageKey: string): string {
-			return `SELECT value FROM ItemTable WHERE key = '${storageKey}';`;
-		}
 	}
 } as const;
 
@@ -57,7 +49,8 @@ interface RuntimeState {
 
 export class OpenAiKeyFix {
 	private readonly stateDbPath: string;
-	private sqlite3Path: string | null = null;
+	private readonly stateDbReader = new CursorStateDbReader((message) => this.log(`${config.logPrefix} ${message}`));
+	private readerUnavailableReason: string | null = null;
 	private state: ServiceState = {
 		enabled: DEFAULT_KEY_FIX_ENABLED,
 		running: false,
@@ -94,7 +87,7 @@ export class OpenAiKeyFix {
 
 	public async activate(): Promise<void> {
 		this.state.activated = true;
-		this.sqlite3Path = await this.findSqlite3();
+		await this.refreshReaderAvailability();
 		const restoredState = RuntimeStateStore.read().keyFix.enabled;
 
 		await this.applySharedState(restoredState);
@@ -143,11 +136,19 @@ export class OpenAiKeyFix {
 			return `${config.files.stateDb} not found`;
 		}
 
-		if (!this.sqlite3Path) {
-			return 'sqlite3 is not installed';
+		return this.readerUnavailableReason;
+	}
+
+	private async refreshReaderAvailability(): Promise<string | null> {
+		if (!fs.existsSync(this.stateDbPath)) {
+			this.readerUnavailableReason = `${config.files.stateDb} not found`;
+
+			return this.readerUnavailableReason;
 		}
 
-		return null;
+		this.readerUnavailableReason = await this.stateDbReader.init();
+
+		return this.readerUnavailableReason;
 	}
 
 	private startMonitoring(): void {
@@ -284,13 +285,7 @@ export class OpenAiKeyFix {
 	}
 
 	private async readUseOpenAiKey(): Promise<boolean | undefined> {
-		if (!this.sqlite3Path) {
-			return undefined;
-		}
-
-		const query = config.sql.readOpenAiKey(config.key.storage);
-		const { stdout } = await execFileAsync(this.sqlite3Path, [this.stateDbPath, query]);
-		const raw = stdout.trim();
+		const raw = await this.stateDbReader.readItemTableValue(this.stateDbPath, config.key.storage);
 
 		if (!raw) {
 			return undefined;
@@ -312,7 +307,7 @@ export class OpenAiKeyFix {
 	}
 
 	private async enableFromShared(): Promise<void> {
-		const unavailableReason = this.getUnavailableReason();
+		const unavailableReason = await this.refreshReaderAvailability();
 
 		if (unavailableReason) {
 			this.state.enabled = true;
@@ -336,7 +331,7 @@ export class OpenAiKeyFix {
 	}
 
 	private async enableByUser(): Promise<void> {
-		const unavailableReason = this.getUnavailableReason();
+		const unavailableReason = await this.refreshReaderAvailability();
 
 		if (unavailableReason) {
 			throw new Error(unavailableReason);
@@ -383,22 +378,5 @@ export class OpenAiKeyFix {
 		await this.syncState(false);
 		this.stopMonitoring();
 		await this.disableOpenAiKeyIfNeeded();
-	}
-
-	private async findSqlite3(): Promise<string | null> {
-		const command = process.platform === 'win32' ? 'where' : 'which';
-
-		try {
-			const { stdout } = await execFileAsync(command, ['sqlite3']);
-			const pathFromStdout = stdout.trim().split(/\r?\n/)[0];
-
-			if (!pathFromStdout) {
-				return null;
-			}
-
-			return pathFromStdout;
-		} catch {
-			return null;
-		}
 	}
 }

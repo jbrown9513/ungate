@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
-export const runtimeApiStatusSchema = z.enum(['running', 'stopped', 'error']);
-export const runtimeTunnelStatusSchema = z.enum(['running', 'starting', 'installing', 'stopped', 'error']);
+export const runtimeApiStatusSchema = z.enum(['starting', 'running', 'stopped', 'error']);
+export const runtimeTunnelStatusSchema = z.enum(['starting', 'running', 'installing', 'stopped', 'error']);
 export const runtimeCommandActionSchema = z.enum(['start-tunnel', 'stop-tunnel', 'restart-tunnel', 'restart-api', 'clear-logs']);
 export const runtimeLogLevelSchema = z.enum(['info', 'warn', 'error']);
 
@@ -27,7 +27,9 @@ export const runtimeApiStateSchema = z.object({
 	port: z.number().nullable(),
 	status: runtimeApiStatusSchema,
 	lastSeenAt: z.number(),
-	lastError: z.string().nullable()
+	lastError: z.string().nullable(),
+	ownerWindowId: z.string().nullable(),
+	startSuppressed: z.boolean().optional()
 });
 
 export const runtimeTunnelStateSchema = z.object({

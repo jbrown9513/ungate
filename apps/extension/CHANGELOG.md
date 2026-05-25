@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.1 - 2026-05-25
+
+- Update changelog
+
+## 1.7.0 - 2026-05-25
+
+- Add Windows support
+
 ## 1.6.0 - 2026-05-19
 
 - Sync API, tunnel, and OpenAI key-fix settings across all open Cursor windows

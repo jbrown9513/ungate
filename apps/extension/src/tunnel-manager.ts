@@ -10,7 +10,18 @@ import { config } from './runtime-state/config';
 import type { LogEntry, TunnelState } from '@ungate/shared/frontend';
 
 const CLOUDFLARED_BIN_DIR = path.join(os.homedir(), '.ungate', 'bin');
-const CLOUDFLARED_BIN_PATH = path.join(CLOUDFLARED_BIN_DIR, 'cloudflared');
+
+function getCloudflaredBinPath(): string {
+	return path.join(CLOUDFLARED_BIN_DIR, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+}
+
+function getCloudflaredLegacyBinPath(): string {
+	return path.join(CLOUDFLARED_BIN_DIR, 'cloudflared');
+}
+
+function getCloudflaredConfigArg(): string {
+	return process.platform === 'win32' ? 'NUL' : '/dev/null';
+}
 
 export class TunnelManager {
 	private tunnel: Tunnel | null = null;
@@ -74,14 +85,14 @@ export class TunnelManager {
 
 	private async ensureBinary(): Promise<void> {
 		const devBinExists = fs.existsSync(bin);
-		const userBinExists = fs.existsSync(CLOUDFLARED_BIN_PATH);
+		const userBinPath = this.resolveUserBinaryPath();
 
 		if (devBinExists) {
 			return;
 		}
 
-		if (userBinExists) {
-			use(CLOUDFLARED_BIN_PATH);
+		if (userBinPath) {
+			use(userBinPath);
 
 			return;
 		}
@@ -91,8 +102,10 @@ export class TunnelManager {
 
 		try {
 			fs.mkdirSync(CLOUDFLARED_BIN_DIR, { recursive: true });
-			await install(CLOUDFLARED_BIN_PATH);
-			use(CLOUDFLARED_BIN_PATH);
+			const installPath = getCloudflaredBinPath();
+			const installedPath = await install(installPath);
+
+			use(installedPath);
 			this.onLog({ timestamp: Date.now(), level: 'info', message: 'cloudflared installed successfully' });
 			this.setState({ status: 'starting', url: null, error: null });
 		} catch (err) {
@@ -102,9 +115,27 @@ export class TunnelManager {
 		}
 	}
 
+	private resolveUserBinaryPath(): string | null {
+		const binPath = getCloudflaredBinPath();
+
+		if (fs.existsSync(binPath)) {
+			return binPath;
+		}
+
+		const legacyPath = getCloudflaredLegacyBinPath();
+
+		if (process.platform === 'win32' && fs.existsSync(legacyPath)) {
+			fs.renameSync(legacyPath, binPath);
+
+			return binPath;
+		}
+
+		return null;
+	}
+
 	private spawnTunnel(port: number): void {
 		const t = Tunnel.quick(`http://localhost:${port}`, {
-			'--config': '/dev/null',
+			'--config': getCloudflaredConfigArg(),
 			'--edge-ip-version': '4'
 		});
 		this.tunnel = t;

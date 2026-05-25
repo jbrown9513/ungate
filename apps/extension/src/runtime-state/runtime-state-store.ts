@@ -92,4 +92,77 @@ export class RuntimeStateStore {
 			return current;
 		});
 	}
+
+	public static isApiStartSuppressed(state: RuntimeState = this.read()): boolean {
+		return state.api.startSuppressed === true;
+	}
+
+	public static async prepareApiForBootstrap(): Promise<RuntimeState> {
+		const current = this.read();
+
+		const portHealthy = current.api.port !== null ? await this.isApiPortHealthy(current.api.port) : false;
+
+		if (portHealthy) {
+			return await this.mutate((state) => {
+				state.api.startSuppressed = false;
+
+				return state;
+			});
+		}
+
+		return await this.mutate((state) => {
+			const now = Date.now();
+
+			state.api.startSuppressed = false;
+			state.api.status = 'stopped';
+			state.api.ownerWindowId = null;
+			state.api.pid = null;
+			state.api.port = null;
+			state.api.lastSeenAt = now;
+
+			return state;
+		});
+	}
+
+	public static async suppressApiAutoStart(message: string): Promise<void> {
+		await this.mutate((current) => {
+			const now = Date.now();
+
+			current.api.status = 'error';
+			current.api.lastError = message;
+			current.api.startSuppressed = true;
+			current.api.ownerWindowId = null;
+			current.api.lastSeenAt = now;
+
+			return current;
+		});
+	}
+
+	public static async resetApiForRestart(): Promise<void> {
+		await this.mutate((current) => {
+			const now = Date.now();
+
+			current.api.status = 'stopped';
+			current.api.lastError = null;
+			current.api.startSuppressed = false;
+			current.api.ownerWindowId = null;
+			current.api.pid = null;
+			current.api.port = null;
+			current.api.lastSeenAt = now;
+
+			return current;
+		});
+	}
+
+	private static async isApiPortHealthy(port: number): Promise<boolean> {
+		try {
+			const response = await fetch(`http://localhost:${port}/health`, {
+				signal: AbortSignal.timeout(config.apiServer.portHealthRequestTimeoutMs)
+			});
+
+			return response.ok;
+		} catch {
+			return false;
+		}
+	}
 }

@@ -20,7 +20,8 @@ export class RuntimeStateNormalizer {
 		if (parsed.success && parsed.data.api) {
 			next.api = {
 				...next.api,
-				...parsed.data.api
+				...parsed.data.api,
+				startSuppressed: parsed.data.api.startSuppressed === true
 			};
 		}
 

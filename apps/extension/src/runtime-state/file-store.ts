@@ -1,10 +1,14 @@
 import * as fs from 'node:fs';
 
-import { sleep, type RuntimeState } from '@ungate/shared/frontend';
+import { type RuntimeState } from '@ungate/shared/frontend';
+
+import { CrossProcessLock } from '../utils/cross-process-lock';
 
 import { config } from './config';
 import { RuntimeStateDefaults } from './default-state';
 import { RuntimeStateNormalizer } from './normalizer';
+
+const RUNTIME_STATE_LOCK = 'runtime-state.lock';
 
 export class RuntimeStateFileStore {
 	public static read(): RuntimeState {
@@ -34,7 +38,7 @@ export class RuntimeStateFileStore {
 
 	public static async mutate(mutator: (current: RuntimeState) => RuntimeState): Promise<RuntimeState> {
 		this.ensureStorage();
-		await this.acquireLock();
+		const release = await CrossProcessLock.acquire(RUNTIME_STATE_LOCK);
 
 		try {
 			const current = this.read();
@@ -43,7 +47,7 @@ export class RuntimeStateFileStore {
 
 			return next;
 		} finally {
-			this.releaseLock();
+			release();
 		}
 	}
 
@@ -53,39 +57,5 @@ export class RuntimeStateFileStore {
 
 	private static ensureStorage(): void {
 		fs.mkdirSync(config.baseDir, { recursive: true });
-	}
-
-	private static async acquireLock(): Promise<void> {
-		const startedAt = Date.now();
-
-		while (true) {
-			try {
-				fs.mkdirSync(config.paths.lockPath);
-
-				return;
-			} catch (error: unknown) {
-				const code = (error as NodeJS.ErrnoException | undefined)?.code;
-				const isAlreadyExists = code === 'EEXIST';
-
-				if (!isAlreadyExists) {
-					throw error;
-				}
-
-				if (Date.now() - startedAt > config.runtimeState.lockTimeoutMs) {
-					this.releaseLock();
-					fs.mkdirSync(config.paths.lockPath, { recursive: true });
-
-					return;
-				}
-
-				await sleep(10);
-			}
-		}
-	}
-
-	private static releaseLock(): void {
-		try {
-			fs.rmdirSync(config.paths.lockPath);
-		} catch {}
 	}
 }
