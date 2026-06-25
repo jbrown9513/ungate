@@ -5,7 +5,31 @@ import { logger } from 'src/utils/logger';
 import { config } from '../config';
 import { Settings } from '../database/app-settings';
 
-import type { AnthropicRequest, ContentBlock } from '../types';
+import type { AnthropicRequest, ContentBlock, ThinkingEffort } from '../types';
+
+const VALID_EFFORTS: readonly ThinkingEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// Opus 4.7/4.8 reject manual budget_tokens (400). They use adaptive thinking,
+// controlled by the `effort` parameter in a top-level `output_config` object.
+// Map the internal reasoning_budget tier onto an effort level.
+function resolveEffort(budget: number | string | undefined): ThinkingEffort | null {
+	if (typeof budget === 'string') {
+		const normalized = budget.toLowerCase();
+
+		return (VALID_EFFORTS as readonly string[]).includes(normalized) ? (normalized as ThinkingEffort) : null;
+	}
+
+	if (typeof budget === 'number') {
+		if (budget <= 0) return null;
+		if (budget <= 4000) return 'low';
+		if (budget <= 10000) return 'medium';
+		if (budget <= 31999) return 'high';
+
+		return 'xhigh';
+	}
+
+	return null;
+}
 
 export class RequestBuilder {
 	private static getStainlessOS(): string {
@@ -69,7 +93,19 @@ export class RequestBuilder {
 		if ('reasoning_budget' in prepared) {
 			const budgetValue = prepared.reasoning_budget;
 			delete prepared.reasoning_budget;
-			logger.warn(`Removed reasoning_budget (${budgetValue}) — not supported by Claude Code API`);
+
+			// Translate the tier into adaptive thinking + effort. Opus 4.7/4.8 only
+			// support this form; manual budget_tokens returns a 400. `effort` has no
+			// effect without `thinking.type: "adaptive"`, so both must be set.
+			const effort = resolveEffort(budgetValue);
+
+			if (effort) {
+				prepared.thinking = { type: 'adaptive' };
+				prepared.output_config = { ...prepared.output_config, effort };
+				logger.log(`Reasoning budget (${budgetValue}) → adaptive thinking (effort: ${effort})`);
+			} else {
+				logger.log(`Reasoning budget (${budgetValue}) ignored — no matching effort tier`);
+			}
 		}
 
 		const systemPrompts: ContentBlock[] = [];

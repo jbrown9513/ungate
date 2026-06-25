@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.2 - 2026-06-25
+
+- Add Opus-4.8 model support
+- Map reasoning tiers to adaptive thinking + effort for Opus 4.7/4.8 (previously dropped)
+
 ## 1.7.1 - 2026-05-25
 
 - Update changelog

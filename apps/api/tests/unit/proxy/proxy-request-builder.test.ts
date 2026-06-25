@@ -24,12 +24,38 @@ describe('proxy-request-builder', () => {
 		});
 
 		expect(prepared.reasoning_budget).toBeUndefined();
+		expect(prepared.thinking).toEqual({ type: 'adaptive' });
+		expect(prepared.output_config).toEqual({ effort: 'high' });
 		expect(Array.isArray(prepared.system)).toBe(true);
 		const system = prepared.system as { type: string; text?: string; cache_control?: { ttl?: number } }[];
 		expect(system.some((block) => block.text === 'extra instruction from settings')).toBe(true);
 		expect(system.find((block) => block.text === 'sys')?.cache_control?.ttl).toBeUndefined();
 		const userBlock = (prepared.messages[0].content as { cache_control?: { ttl?: number } }[])[0];
 		expect(userBlock.cache_control?.ttl).toBeUndefined();
+	});
+
+	it('maps numeric reasoning budget onto an effort tier', () => {
+		const prepared = RequestBuilder.prepareClaudeCodeBody({
+			model: 'claude-opus-4-8',
+			max_tokens: 1024,
+			reasoning_budget: 10000,
+			messages: [{ role: 'user', content: 'hello' }]
+		});
+
+		expect(prepared.reasoning_budget).toBeUndefined();
+		expect(prepared.thinking).toEqual({ type: 'adaptive' });
+		expect(prepared.output_config).toEqual({ effort: 'medium' });
+	});
+
+	it('does not set thinking when no reasoning budget is provided', () => {
+		const prepared = RequestBuilder.prepareClaudeCodeBody({
+			model: 'claude-opus-4-8',
+			max_tokens: 1024,
+			messages: [{ role: 'user', content: 'hello' }]
+		});
+
+		expect(prepared.thinking).toBeUndefined();
+		expect(prepared.output_config).toBeUndefined();
 	});
 
 	it('converts string system prompt into system blocks', () => {

@@ -37,6 +37,17 @@ export interface ImageSource {
 	url?: string;
 }
 
+export type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export interface ThinkingConfig {
+	type: 'enabled' | 'adaptive' | 'disabled';
+	budget_tokens?: number;
+}
+
+export interface OutputConfig {
+	effort?: ThinkingEffort;
+}
+
 export interface AnthropicRequest {
 	model: string;
 	max_tokens: number;
@@ -51,6 +62,8 @@ export interface AnthropicRequest {
 	tools?: Tool[];
 	tool_choice?: ToolChoice;
 	reasoning_budget?: number | string;
+	thinking?: ThinkingConfig;
+	output_config?: OutputConfig;
 }
 
 export interface Tool {

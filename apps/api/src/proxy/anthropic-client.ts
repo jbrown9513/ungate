@@ -28,10 +28,6 @@ async function makeClaudeCodeRequest(
 	try {
 		const preparedBody = RequestBuilder.prepareClaudeCodeBody(body);
 
-		if ('reasoning_budget' in preparedBody) {
-			delete preparedBody.reasoning_budget;
-		}
-
 		let reverseToolMapping: Record<string, string> = {};
 		if (preparedBody.tools && preparedBody.tools.length > 0) {
 			const mapped = ToolMapper.map(preparedBody.tools);
