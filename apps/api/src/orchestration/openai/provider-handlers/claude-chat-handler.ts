@@ -23,7 +23,7 @@ export class ClaudeChatHandler {
 		const { response, context } = await proxyRequest('/v1/messages', anthropicBody, headers);
 
 		if (!response.ok) {
-			const errorJson = await response.json();
+			const errorJson = await response.json().catch(() => ({ error: { message: `HTTP ${response.status}`, type: 'api_error' } }));
 			const payload = CompletionErrorMapper.claudeApiErrorPayload(errorJson);
 			const errorLatencyMs = Date.now() - context.startTime;
 
