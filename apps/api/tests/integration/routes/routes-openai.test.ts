@@ -288,6 +288,29 @@ describe('routes-openai', () => {
 		await app.close();
 	});
 
+	it('handles a non-JSON claude error body without crashing', async () => {
+		resolveForChatCompletionMock.mockReturnValueOnce(null);
+		proxyRequestMock.mockResolvedValueOnce({
+			response: new Response('upstream temporarily unavailable', {
+				status: 529,
+				headers: { 'content-type': 'text/plain' }
+			}),
+			context: { startTime: Date.now(), model: 'claude-sonnet-4-6', source: 'claude', reverseToolMapping: {} }
+		});
+
+		const app = await withPlugin(openaiPlugin, { apiKey: 'secret' });
+		const response = await app.inject({
+			method: 'POST',
+			url: '/v1/chat/completions',
+			headers: { 'x-api-key': 'secret' },
+			payload: { model: 'claude-4.6-sonnet', messages: [{ role: 'user', content: 'hello' }], stream: false }
+		});
+
+		expect(response.statusCode).toBe(529);
+		expect(response.json().error.message).toBe('HTTP 529');
+		await app.close();
+	});
+
 	it('routes to mapped openai with streaming passthrough', async () => {
 		const stream = new ReadableStream({
 			start(controller) {

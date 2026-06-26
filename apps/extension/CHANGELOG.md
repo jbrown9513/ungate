@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.3 - 2026-06-25
+
+- Fix Anthropic provider errors with non-JSON bodies so upstream failures return a normal error response instead of crashing the API
+
 ## 1.7.2 - 2026-06-25
 
 - Add Opus-4.8 model support
